@@ -1,4 +1,24 @@
 import streamlit as st
+import re
+
+def enrich_followup_query(query):
+    if "conversation_context" not in st.session_state:
+        return query
+
+    ctx = st.session_state.conversation_context
+    lower = query.lower()
+
+    # Check if it's a follow-up
+    if any(phrase in lower for phrase in ["how about", "what of", "and", "now", "those"]):
+        # Inject department if it's missing
+        if ctx.get("current_department") and "law" not in lower and "computer" not in lower:
+            query = f"{query.strip()} in {ctx['current_department']} department"
+
+        # Inject level if applicable (optional)
+        # if ctx.get("current_level") and "100" not in lower:
+        #     query += f" for {ctx['current_level']} level"
+
+    return query
 
 def detect_emotion(text):
     text = text.lower()
