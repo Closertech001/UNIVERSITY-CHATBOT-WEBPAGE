@@ -3,6 +3,7 @@ import uuid
 import os
 import json
 import sys
+import time
 
 # 🔧 Add app folder to import path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -46,11 +47,11 @@ if user_input := st.chat_input("Ask me anything about Crescent University..."):
     with st.chat_message("assistant"):
         response = get_response(user_input)
         placeholder = st.empty()
-        full_response = ""
+        full_response = ""      
         for part in response.split():
             full_response += part + " "
             placeholder.markdown(full_response + "▌")
-            st.sleep(0.03)
+            time.sleep(0.03)  # ✅ CORRECT WAY
         placeholder.markdown(full_response)
 
     # Save to chat history
