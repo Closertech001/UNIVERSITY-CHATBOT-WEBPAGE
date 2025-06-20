@@ -9,7 +9,8 @@ You are CUAB Buddy, the friendly assistant for Crescent University. Speak warmly
 @st.cache_resource()
 def setup_resources():
     model = SentenceTransformer('all-MiniLM-L6-v2')
-    with open("cuab_assistant/data/qa_data.json", "r", encoding="utf-8") as f:
+    with open("data/qa_data.json", "r", encoding="utf-8") as f:
+
         data = json.load(f)
     questions = [item["question"] for item in data]
     embeddings = model.encode(questions, convert_to_tensor=True)
