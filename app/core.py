@@ -75,11 +75,19 @@ def stream_response(response):
     return output
 
 def get_response(user_query):
+    from .context_manager import enrich_followup_query
+
+    # If follow-up, enrich question using stored department
+    enriched_query = enrich_followup_query(user_query)
+
     if is_greeting(user_query):
         return "Hey there! 😊 How can I help you today?"
-    answer = search_answer(user_query)
+
+    answer = search_answer(enriched_query)
     if not answer:
-        answer = get_gpt_answer(user_query)
+        answer = get_gpt_answer(enriched_query)
+
     emotion = detect_emotion(user_query)
-    update_conversation_context(user_query, answer)
+    update_conversation_context(enriched_query, answer)
     return format_response(answer, emotion)
+
