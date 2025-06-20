@@ -1,4 +1,6 @@
-flask
+streamlit
 sentence-transformers
-torch
-pandas
+nltk
+symspellpy
+openai
+inflect
