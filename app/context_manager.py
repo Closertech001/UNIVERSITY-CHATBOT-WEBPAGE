@@ -1,5 +1,38 @@
 import streamlit as st
-import re
+from app.normalizer import DEPARTMENT_ALIASES, normalize_text
+
+def detect_emotion(text):
+    text = text.lower()
+    if any(word in text for word in ["thank", "great", "awesome", "perfect", "appreciate"]):
+        return "positive"
+    elif any(word in text for word in ["angry", "frustrated", "upset", "annoyed", "sucks"]):
+        return "negative"
+    return "neutral"
+
+def detect_department(query):
+    query = normalize_text(query)
+    for dept, aliases in DEPARTMENT_ALIASES.items():
+        if dept in query or any(alias in query for alias in aliases):
+            return dept
+    return None
+
+def update_conversation_context(user_query, response):
+    if "conversation_context" not in st.session_state:
+        st.session_state.conversation_context = {}
+
+    query_norm = normalize_text(user_query)
+
+    # Store department context
+    for dept, aliases in DEPARTMENT_ALIASES.items():
+        if dept in query_norm or any(alias in query_norm for alias in aliases):
+            st.session_state.conversation_context["current_department"] = dept
+            break
+
+    # Store level context
+    for lvl in ["100", "200", "300", "400", "500"]:
+        if lvl in query_norm:
+            st.session_state.conversation_context["current_level"] = lvl
+            break
 
 def enrich_followup_query(query):
     if "conversation_context" not in st.session_state:
@@ -8,34 +41,14 @@ def enrich_followup_query(query):
     ctx = st.session_state.conversation_context
     lower = query.lower()
 
-    # Check if it's a follow-up
-    if any(phrase in lower for phrase in ["how about", "what of", "and", "now", "those"]):
-        # Inject department if it's missing
-        if ctx.get("current_department") and "law" not in lower and "computer" not in lower:
-            query = f"{query.strip()} in {ctx['current_department']} department"
-
-        # Inject level if applicable (optional)
-        # if ctx.get("current_level") and "100" not in lower:
-        #     query += f" for {ctx['current_level']} level"
+    # Check if user is making a follow-up reference
+    followup_phrases = ["how about", "what of", "and", "now", "those"]
+    if any(phrase in lower for phrase in followup_phrases):
+        # Add department if missing
+        if ctx.get("current_department") and ctx["current_department"] not in lower:
+            query += f" in {ctx['current_department']} department"
+        # Add level if missing
+        if ctx.get("current_level") and ctx["current_level"] not in lower:
+            query += f" for {ctx['current_level']} level"
 
     return query
-
-def detect_emotion(text):
-    text = text.lower()
-    if any(word in text for word in ["thank", "great", "awesome"]):
-        return "positive"
-    elif any(word in text for word in ["angry", "frustrated", "upset"]):
-        return "negative"
-    return "neutral"
-
-def detect_department(query):
-    departments = ["computer science", "law"]
-    for dept in departments:
-        if dept in query:
-            return dept
-    return None
-
-def update_conversation_context(user_query, response):
-    if "conversation_context" not in st.session_state:
-        st.session_state.conversation_context = {}
-    st.session_state.conversation_context["last_topic"] = user_query
