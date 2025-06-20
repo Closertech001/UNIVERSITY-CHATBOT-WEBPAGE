@@ -20,7 +20,14 @@ for msg in st.session_state.chat_history:
 if user_input := st.chat_input("Ask me anything..."):
     with st.chat_message("user"):
         st.markdown(user_input)
+
     with st.chat_message("assistant"):
         response = get_response(user_input)
-    full_response = response
-    st.session_state.chat_history.append({"user": user_input, "bot": full_response})
+        full_response = stream_response(response)  # Add this
+
+    # Save conversation
+    st.session_state.chat_history.append({
+        "user": user_input,
+        "bot": full_response
+    })
+
