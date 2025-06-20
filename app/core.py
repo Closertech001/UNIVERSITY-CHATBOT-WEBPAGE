@@ -14,22 +14,39 @@ def is_greeting(text):
 
 def get_gpt_answer(user_query):
     try:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        ctx = st.session_state.get("conversation_context", {})
+        context_clues = []
+
+        # Inject memory of department/level
+        if ctx.get("current_department"):
+            context_clues.append(f"The user is asking about the {ctx['current_department']} department.")
+        if ctx.get("current_level"):
+            context_clues.append(f"They are referring to {ctx['current_level']} level.")
+        context_summary = " ".join(context_clues)
+
+        # Build GPT prompt
+        messages = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + context_summary}]
+
+        # Add chat history (last 3 turns for short-term memory)
         messages += [
             {"role": "user" if i % 2 == 0 else "assistant", "content": msg["user"] if i % 2 == 0 else msg["bot"]}
             for i, msg in enumerate(st.session_state.chat_history[-4:])
         ]
+
+        # Add current query
         messages.append({"role": "user", "content": user_query})
+
+        # Get GPT completion
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=messages,
             temperature=0.7,
             presence_penalty=0.5,
-            frequency_penalty=0.5
+            frequency_penalty=0.4
         )
-        return response.choices[0].message.content.replace("However,", "That said,").replace("Furthermore,", "Also,")
+        return response.choices[0].message.content.strip()
     except Exception:
-        return "Hmm, I'm having some trouble connecting. Could you ask again?"
+        return "Hmm, I’m having a hard time thinking right now 😕. Could you repeat that another way?"
 
 def search_answer(user_query, threshold=0.5):
     processed_query = normalize_text(user_query)
