@@ -8,6 +8,13 @@ import streamlit as st
 from .normalizer import normalize_text, extract_course_codes
 from .context_manager import detect_emotion, detect_department, update_conversation_context
 from .data_loader import qa_data, qa_embeddings, model, SYSTEM_PROMPT
+from .normalization_config import (
+    VERB_CONJUGATIONS,
+    PLURAL_MAP,
+    ABBREVIATIONS,
+    SYNONYMS,
+    DEPARTMENT_ALIASES
+)
 
 def is_greeting(text):
     return any(word in text.lower() for word in ["hello", "hi", "hey", "good morning", "good evening", "good day"])
