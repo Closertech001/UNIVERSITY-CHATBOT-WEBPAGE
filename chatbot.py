@@ -4,246 +4,143 @@ import json
 import os
 import tempfile
 import time
-from langchain.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# Initialize OpenAI client with better error handling
-try:
-    api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
-    if not api_key:
-        st.error("OpenAI API key not found. Please set OPENAI_API_KEY environment variable or in Streamlit secrets.")
-        st.stop()
-    
-    client = OpenAI(api_key=api_key)
-    embeddings = OpenAIEmbeddings(openai_api_key=api_key)
-except Exception as e:
-    st.error(f"Failed to initialize OpenAI: {str(e)}")
-    st.stop()
-
-# Configuration
+# --- Configuration ---
 SYSTEM_PROMPT = """
-You are Alex, a knowledgeable university assistant with both technical knowledge and emotional intelligence.
-Combine these capabilities:
-1. Answer accurately from the qa_data.json knowledge base
-2. Show personality: warm, patient, and helpful
-3. Adapt tone to context (formal/casual)
-4. Remember user preferences and context
-5. Handle both simple FAQs and complex queries
+You are Alex, a knowledgeable university assistant. Be:
+- Accurate from qa_data.json
+- Warm and helpful
+- Adaptive to context
+- Mindful of user preferences
 """
 
+# --- Initialize OpenAI Client ---
+@st.cache_resource
+def init_openai_client():
+    try:
+        # Try multiple ways to get API key
+        api_key = (
+            os.getenv("OPENAI_API_KEY") or 
+            st.secrets.get("OPENAI_API_KEY") or
+            st.session_state.get("openai_api_key")
+        )
+        
+        if not api_key:
+            st.error("🔑 API key missing. Please configure OPENAI_API_KEY")
+            st.stop()
+            
+        return OpenAI(api_key=api_key), OpenAIEmbeddings(openai_api_key=api_key)
+    except Exception as e:
+        st.error(f"🚨 Failed to initialize OpenAI: {str(e)}")
+        st.stop()
+
+client, embeddings = init_openai_client()
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000)
 
-# Load qa_data.json with better error handling
-try:
-    with open("qa_data.json") as f:
-        university_data = json.load(f)
-except FileNotFoundError:
-    st.error("qa_data.json not found. Please ensure the file exists in the same directory.")
-    st.stop()
-except json.JSONDecodeError as e:
-    st.error(f"Invalid JSON in qa_data.json: {str(e)}")
-    st.stop()
-except Exception as e:
-    st.error(f"Error loading qa_data.json: {str(e)}")
-    st.stop()
+# --- Load University Data ---
+@st.cache_data
+def load_university_data():
+    try:
+        with open("qa_data.json") as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"📂 Error loading qa_data.json: {str(e)}")
+        st.stop()
 
-# Initialize session state
+university_data = load_university_data()
+
+# --- Session State ---
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi there! I'm Alex, your university assistant. How can I help you today?"}
+        {"role": "assistant", "content": "Hi! I'm Alex, your university assistant. How can I help?"}
     ]
+
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
-if "user_info" not in st.session_state:
-    st.session_state.user_info = {}
 
-# UI Setup
-st.title("🎓 University Assistant (Alex)")
-st.sidebar.header("Supplemental Documents")
-
-# File Upload Section
-uploaded_docs = st.sidebar.file_uploader(
-    "Upload Supporting Documents",
-    type=["pdf", "docx", "txt"],
-    accept_multiple_files=True
-)
-
-def process_documents(uploaded_files):
-    """Process uploaded documents into vector store"""
-    if not uploaded_files:
-        return None
-    
+# --- Document Processing ---
+def process_documents(files):
     docs = []
-    for file in uploaded_files:
+    for file in files:
         try:
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp.write(file.getvalue())
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.name)[1]) as tmp:
+                tmp.write(file.getbuffer())
                 tmp_path = tmp.name
             
-            if file.name.endswith(".pdf"):
-                loader = PyPDFLoader(tmp_path)
-            elif file.name.endswith(".docx"):
-                loader = Docx2txtLoader(tmp_path)
-            else:
-                loader = TextLoader(tmp_path)
+            loader = {
+                ".pdf": PyPDFLoader,
+                ".docx": Docx2txtLoader,
+                ".txt": TextLoader
+            }.get(os.path.splitext(file.name)[1].lower(), TextLoader)(tmp_path)
             
             docs.extend(loader.load())
+            os.unlink(tmp_path)
         except Exception as e:
-            st.sidebar.error(f"Error loading {file.name}: {str(e)}")
-        finally:
-            if 'tmp_path' in locals():
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
+            st.sidebar.error(f"❌ Error processing {file.name}: {str(e)}")
     
     if docs:
-        chunks = text_splitter.split_documents(docs)
-        return FAISS.from_documents(chunks, embeddings)
+        return FAISS.from_documents(text_splitter.split_documents(docs), embeddings)
     return None
 
-# Process document uploads
-if uploaded_docs:
-    with st.sidebar.status("Processing documents...", expanded=True):
-        st.write("Indexing document content...")
-        st.session_state.vector_store = process_documents(uploaded_docs)  # Fixed typo here (was uploaded_docs)
-        if st.session_state.vector_store:
-            st.sidebar.success(f"Processed {len(uploaded_docs)} documents!")
-        else:
-            st.sidebar.warning("No valid documents processed")
+# --- UI Components ---
+st.title("🎓 University Assistant")
+with st.sidebar:
+    st.header("Settings")
+    if not os.getenv("OPENAI_API_KEY"):
+        st.session_state.openai_api_key = st.text_input("OpenAI API Key", type="password")
+    
+    st.header("Upload Documents")
+    uploaded_files = st.file_uploader(
+        "Add supplemental files", 
+        type=["pdf", "docx", "txt"],
+        accept_multiple_files=True
+    )
+    if uploaded_files and st.button("Process"):
+        with st.spinner("Indexing documents..."):
+            st.session_state.vector_store = process_documents(uploaded_files)
 
-# Core chat functions
-def get_university_context():
-    """Extract structured information from qa_data.json"""
-    context = "UNIVERSITY KNOWLEDGE BASE:\n"
-    
-    if "faqs" in university_data:
-        context += "\nFAQs:\n"
-        for item in university_data["faqs"]:
-            context += f"Q: {item.get('question','')}\nA: {item.get('answer','')}\n"
-    
-    for section, data in university_data.items():
-        if section != "faqs":
-            context += f"\n{section.upper()}:\n"
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    context += f"{key}: {value}\n"
-            elif isinstance(data, list):
-                for item in data:
-                    context += f"- {item}\n"
-            else:
-                context += f"{data}\n"
-    
-    return context
-
-def search_vector_store(query):
-    """Search uploaded documents for relevant content"""
-    if not st.session_state.vector_store:
-        return None
+# --- Chat Functions ---
+def generate_response(prompt):
     try:
-        docs = st.session_state.vector_store.similarity_search(query, k=2)
-        return "\n".join([d.page_content for d in docs])
-    except Exception as e:
-        st.error(f"Search error: {str(e)}")
-        return None
-
-def analyze_emotion(text):
-    """Analyze text emotion using OpenAI"""
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Classify emotion from text (angry/happy/confused/neutral)"},
-                {"role": "user", "content": text}
-            ],
-            max_tokens=10
-        )
-        return response.choices[0].message.content.lower()
-    except Exception as e:
-        st.error(f"Emotion analysis failed: {str(e)}")
-        return "neutral"
-
-def stream_response(response):
-    """Stream response with typing effect"""
-    message_placeholder = st.empty()
-    full_response = ""
-    for chunk in response.split():
-        full_response += chunk + " "
-        time.sleep(0.05)
-        message_placeholder.markdown(full_response + "▌")
-    message_placeholder.markdown(full_response)
-    return full_response
-
-# Main chat interface
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-if prompt := st.chat_input("Ask Alex anything about the university..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    
-    with st.chat_message("assistant"):
-        # Step 1: Check for direct matches
-        direct_answer = None
+        # 1. Check direct matches
         if "faqs" in university_data:
             for faq in university_data["faqs"]:
                 if prompt.lower() in faq["question"].lower():
-                    direct_answer = faq["answer"]
-                    break
+                    return faq["answer"]
         
-        if direct_answer:
-            response = direct_answer
-        else:
-            # Step 2: Build context
-            context_parts = [get_university_context()]
-            
-            if doc_context := search_vector_store(prompt):
-                context_parts.append(f"SUPPLEMENTAL DOCUMENTS:\n{doc_context}")
-            
-            if st.session_state.user_info:
-                context_parts.append(f"USER PROFILE:\n{st.session_state.user_info}")
-            
-            # Step 3: Detect emotion
-            emotion = analyze_emotion(prompt)
-            
-            # Step 4: Generate response
-            messages = [
+        # 2. Build context
+        context = f"University Knowledge:\n{json.dumps(university_data, indent=2)}"
+        
+        if st.session_state.vector_store:
+            docs = st.session_state.vector_store.similarity_search(prompt, k=2)
+            context += f"\n\nSupplemental Docs:\n{docs[0].page_content if docs else 'None'}"
+        
+        # 3. Generate response
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                *st.session_state.messages[:-1]
-            ]
-            
-            if context_parts:
-                messages.insert(1, {
-                    "role": "assistant", 
-                    "content": "CONTEXT:\n" + "\n\n".join(context_parts)
-                })
-            
-            messages.append({
-                "role": "user", 
-                "content": f"[Detected emotion: {emotion}] {prompt}"
-            })
-            
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4-turbo",
-                    messages=messages,
-                    temperature=0.7
-                ).choices[0].message.content
-            except Exception as e:
-                response = f"I encountered an error: {str(e)}"
-        
-        # Display response
-        full_response = stream_response(response)
-        
-        # Remember user info
-        if "my name is" in prompt.lower():
-            name = prompt.split("is")[-1].strip()
-            st.session_state.user_info["name"] = name
-            full_response += f"\n\nI'll remember your name is {name}!"
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {prompt}"}
+            ],
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"⚠️ Error: {str(e)}"
+
+# --- Chat Interface ---
+for msg in st.session_state.messages:
+    st.chat_message(msg["role"]).write(msg["content"])
+
+if prompt := st.chat_input("Ask about the university..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.chat_message("user").write(prompt)
     
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+    with st.chat_message("assistant"):
+        response = generate_response(prompt)
+        st.write(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
