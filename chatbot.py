@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import time
+from openai import OpenAI
 from langchain.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import FAISS
