@@ -4,22 +4,21 @@ openai==1.12.0
 python-dotenv==1.0.0
 tiktoken==0.5.2
 
-# LangChain Ecosystem
+# LangChain Ecosystem (compatible versions)
 langchain==0.1.12
 langchain-community==0.0.20
-langchain-core==0.1.23
+langchain-core==0.1.31  # Updated to match langchain requirement
 langchain-openai==0.0.8
 
-# Vector Database & Embeddings
-faiss-gpu==1.7.4  # Requires CUDA 11.4+
-sentence-transformers==2.2.2
+# Vector Database (CPU version)
+faiss-cpu==1.7.4  # Changed from faiss-gpu which wasn't found
 
 # Document Processing
 pypdf==3.17.0
 docx2txt==0.8
 unstructured==0.12.2
 
-# Optional (but recommended)
+# Required dependencies
 numpy==1.26.3
 pandas==2.1.4
-typing-extensions==4.9.0  # Better type hints
+typing-extensions==4.9.0
