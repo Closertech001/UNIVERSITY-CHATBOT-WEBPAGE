@@ -11,7 +11,7 @@ langchain-core==0.1.23
 langchain-openai==0.0.8
 
 # Vector Database & Embeddings
-faiss-cpu==1.7.4  # Use faiss-gpu==1.7.4 if you have CUDA
+faiss-gpu==1.7.4  # Requires CUDA 11.4+
 sentence-transformers==2.2.2
 
 # Document Processing
