@@ -247,6 +247,34 @@ class ChatInterface:
         if 'anonymous_mode' not in st.session_state:
             st.session_state.anonymous_mode = False
 
+    def _setup_ui_style(self):
+        st.markdown("""
+            <style>
+                .message-bubble-user {
+                    background-color: #f0f2f6;
+                    padding: 10px 15px;
+                    border-radius: 15px;
+                    margin: 10px 0;
+                    max-width: 80%;
+                    float: right;
+                    clear: both;
+                }
+                .message-bubble-bot {
+                    background-color: #e3f2fd;
+                    padding: 10px 15px;
+                    border-radius: 15px;
+                    margin: 10px 0;
+                    max-width: 80%;
+                    float: left;
+                    clear: both;
+                }
+                .bot-name {
+                    font-weight: bold;
+                    color: #1976d2;
+                }
+            </style>
+        """, unsafe_allow_html=True)
+
     def show_profile_section(self):
         with st.expander("👤 Profile Settings", expanded=True):
             st.session_state.anonymous_mode = st.checkbox(
@@ -285,7 +313,7 @@ class ChatInterface:
         self._show_follow_up_suggestions(ai_service, text_processor, db_manager)
         self._display_chat_history()
 
-        def _process_user_query(self, user_query, ai_service, text_processor, db_manager):
+    def _process_user_query(self, user_query, ai_service, text_processor, db_manager):
         if not user_query.strip():
             st.warning("Please enter a question")
             return
@@ -324,24 +352,21 @@ class ChatInterface:
                 full_response
             )
 
-        # Update history view
-        self._display_chat_history()
-        
-        # Run in thread and update when done
-        def update_answer():
-            answer = process_query()
-            st.session_state.history[-1] = (user_query, answer)
-            if db_manager:
-                db_manager.store_conversation(
-                    str(time.time()),
-                    st.session_state.user_name,
-                    st.session_state.user_dept,
-                    user_query,
-                    answer
-                )
-            st.experimental_rerun()
+    def _show_follow_up_suggestions(self, ai_service, text_processor, db_manager):
+        if st.session_state.history:
+            st.markdown("**Follow-up questions:**")
+            suggestions = [
+                "What are the admission requirements?",
+                "When is the next application deadline?",
+                "What courses are offered in Computer Science?",
+                "How much are the tuition fees?"
+            ]
             
-        self.executor.submit(update_answer)
+            cols = st.columns(2)
+            for i, suggestion in enumerate(suggestions[:4]):
+                with cols[i % 2]:
+                    if st.button(suggestion, key=f"suggestion_{i}"):
+                        self._process_user_query(suggestion, ai_service, text_processor, db_manager)
 
     def _display_chat_history(self):
         for q, a in reversed(st.session_state.history):
@@ -352,7 +377,8 @@ class ChatInterface:
 def main():
     # Initialize spell checker
     sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-    sym_spell.load_dictionary(config.SPELL_CHECKER_DICT, 0, 1)
+    dictionary_path = os.path.join(os.path.dirname(__file__), config.SPELL_CHECKER_DICT)
+    sym_spell.load_dictionary(dictionary_path, 0, 1)
     
     # Initialize services
     text_processor = TextProcessor(sym_spell)
