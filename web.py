@@ -258,6 +258,7 @@ class ChatInterface:
                     max-width: 80%;
                     float: right;
                     clear: both;
+                    font-color:#000000;
                 }
                 .message-bubble-bot {
                     background-color: #e3f2fd;
@@ -267,10 +268,11 @@ class ChatInterface:
                     max-width: 80%;
                     float: left;
                     clear: both;
+                    font-color:#000000;
                 }
                 .bot-name {
                     font-weight: bold;
-                    color: #1976d2;
+                    color: #000000;
                 }
             </style>
         """, unsafe_allow_html=True)
