@@ -150,6 +150,79 @@ class AIService:
         except Exception as e:
             return f"AI error: {str(e)}"
 
+# --- Database Manager ---
+class DatabaseManager:
+    def __init__(self, db_name=None):
+        default_name = "chat_memory.db"
+        self.db_name = db_name or os.path.join(os.path.dirname(__file__), default_name)
+        self.conn = None
+        self._batch_buffer = []
+
+    def __enter__(self):
+        try:
+            self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
+            self._initialize_db()
+            return self
+        except sqlite3.Error as e:
+            st.error(f"Database connection failed: {str(e)}")
+            return None
+
+    def _initialize_db(self):
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                user_name TEXT,
+                user_dept TEXT,
+                question TEXT,
+                answer TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.commit()
+
+    def store_conversation(self, session_id, user_name, user_dept, question, answer):
+        try:
+            self._batch_buffer.append((session_id, user_name, user_dept, question, answer))
+            if len(self._batch_buffer) >= config.DB_BATCH_SIZE:
+                self._flush_buffer()
+            return True
+        except Exception:
+            return False
+
+    def _flush_buffer(self):
+        if not self._batch_buffer:
+            return
+        try:
+            cursor = self.conn.cursor()
+            cursor.executemany("""
+                INSERT INTO memory (session_id, user_name, user_dept, question, answer)
+                VALUES (?, ?, ?, ?, ?)
+            """, self._batch_buffer)
+            self.conn.commit()
+            self._batch_buffer = []
+        except sqlite3.Error as e:
+            st.error(f"Error writing to database: {str(e)}")
+
+    def clean_old_records(self, days=30):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                DELETE FROM memory 
+                WHERE timestamp < datetime('now', ?)
+            """, (f"-{days} days",))
+            self.conn.commit()
+            return cursor.rowcount
+        except sqlite3.Error as e:
+            st.error(f"Error cleaning old records: {str(e)}")
+            return 0
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._flush_buffer()
+        if self.conn:
+            self.conn.close()
+
 # --- Chat Interface ---
 class ChatInterface:
     def __init__(self):
