@@ -1,13 +1,13 @@
-# University Chatbot - Optimized Version
+# Cleaned version with fixes applied
 import streamlit as st
 import json
 import time
 import sqlite3
 import torch
+import os
 from sentence_transformers import SentenceTransformer, util
 from symspellpy import SymSpell
 import openai
-import os
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 
@@ -22,7 +22,7 @@ st.set_page_config(
     }
 )
 
-# --- Application Setup ---
+# --- Config ---
 class Config:
     def __init__(self):
         self.OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
@@ -36,6 +36,17 @@ class Config:
 
 config = Config()
 openai.api_key = config.OPENAI_API_KEY
+
+# --- Embedding Model Loader ---
+@st.cache_resource
+def load_embedding_model(name):
+    return SentenceTransformer(name, device='cpu', cache_folder='./model_cache')
+
+# --- Q&A Data Loader ---
+@st.cache_data
+def load_qa_file(qa_file):
+    with open(qa_file, "r") as f:
+        return json.load(f)
 
 # --- Text Processor ---
 class TextProcessor:
@@ -68,172 +79,67 @@ class TextProcessor:
         text = self.normalize_text(user_input)
         return self.correct_spelling(text)
 
-# --- Database Manager ---
-class DatabaseManager:
-    def __init__(self, db_name="chat_memory.db"):
-        self.db_name = db_name
-        self.conn = None
-        self._batch_buffer = []
-
-    def __enter__(self):
-        try:
-            self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
-            self._initialize_db()
-            return self
-        except sqlite3.Error as e:
-            st.error(f"Database connection failed: {str(e)}")
-            return None
-
-    def _initialize_db(self):
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS memory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT,
-                user_name TEXT,
-                user_dept TEXT,
-                question TEXT,
-                answer TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.conn.commit()
-
-    def store_conversation(self, session_id, user_name, user_dept, question, answer):
-        try:
-            self._batch_buffer.append((session_id, user_name, user_dept, question, answer))
-            if len(self._batch_buffer) >= config.DB_BATCH_SIZE:
-                self._flush_buffer()
-            return True
-        except Exception:
-            return False
-
-    def _flush_buffer(self):
-        if not self._batch_buffer:
-            return
-        try:
-            cursor = self.conn.cursor()
-            cursor.executemany("""
-                INSERT INTO memory (session_id, user_name, user_dept, question, answer)
-                VALUES (?, ?, ?, ?, ?)
-            """, self._batch_buffer)
-            self.conn.commit()
-            self._batch_buffer = []
-        except sqlite3.Error:
-            pass
-
-    def clean_old_records(self, days=30):
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                DELETE FROM memory 
-                WHERE timestamp < datetime('now', ?)
-            """, (f"-{days} days",))
-            self.conn.commit()
-            return cursor.rowcount
-        except sqlite3.Error:
-            return 0
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._flush_buffer()
-        if self.conn:
-            self.conn.close()
-
 # --- AI Service ---
 class AIService:
-    @st.cache_resource
-    def __init__(_self, embedding_model_name, llm_model):
-        try:
-            # Initialize with more conservative settings
-            _self.embedding_model = SentenceTransformer(
-                embedding_model_name,
-                device='cpu',
-                use_auth_token=False,
-                cache_folder='./model_cache'
-            )
-            _self.llm_model = llm_model
-            _self.qa_embeddings = None
-            _self.questions = []
-            _self.answers = []
-            _self.common_responses = {
-                "hello": "Hello! How can I help you today?",
-                "hi": "Hi there! What would you like to know about Crescent University?",
-                "thanks": "You're welcome! Is there anything else I can help with?",
-                "thank you": "You're welcome! Is there anything else I can help with?",
-                "goodbye": "Goodbye! Have a great day!",
-                "bye": "Goodbye! Come back if you have more questions!"
-            }
-        except Exception as e:
-            st.error(f"Failed to initialize AI service: {str(e)}")
-            raise RuntimeError("AI service initialization failed") from e
+    def __init__(self, embedding_model_name, llm_model):
+        self.embedding_model = load_embedding_model(embedding_model_name)
+        self.llm_model = llm_model
+        self.qa_embeddings = None
+        self.questions = []
+        self.answers = []
+        self.common_responses = {
+            "hello": "Hello! How can I help you today?",
+            "hi": "Hi there! What would you like to know about Crescent University?",
+            "thanks": "You're welcome! Is there anything else I can help with?",
+            "thank you": "You're welcome! Is there anything else I can help with?",
+            "goodbye": "Goodbye! Have a great day!",
+            "bye": "Goodbye! Come back if you have more questions!"
+        }
 
-    @st.cache_data
-    def load_qa_data(_self, qa_file="qa_data.json"):
+    def load_qa_data(self, qa_file="qa_data.json"):
         try:
-            with open(qa_file, "r") as f:
-                qa_data = json.load(f)
-                _self.questions = [item['question'] for item in qa_data]
-                _self.answers = [item['answer'] for item in qa_data]
-                
-                # Verify we have questions to process
-                if not _self.questions:
-                    st.warning("Q&A data file is empty")
-                    return False
-                
-                # Load embeddings in smaller batches if needed
-                batch_size = 32
-                embeddings = []
-                for i in range(0, len(_self.questions), batch_size):
-                    batch = _self.questions[i:i + batch_size]
-                    embeddings.append(_self.embedding_model.encode(batch, convert_to_tensor=True))
-                
-                # Combine batch embeddings
-                if embeddings:
-                    _self.qa_embeddings = torch.cat(embeddings) if len(embeddings) > 1 else embeddings[0]
-                else:
-                    st.warning("No embeddings were generated")
-                    return False
-                    
-                return True
-        except FileNotFoundError:
-            st.error(f"Q&A data file not found: {qa_file}")
-            return False
-        except json.JSONDecodeError:
-            st.error(f"Invalid JSON format in Q&A data file: {qa_file}")
-            return False
+            qa_data = load_qa_file(qa_file)
+            self.questions = [item['question'] for item in qa_data]
+            self.answers = [item['answer'] for item in qa_data]
+
+            if not self.questions:
+                st.warning("Q&A data is empty")
+                return False
+
+            batch_size = 32
+            embeddings = [
+                self.embedding_model.encode(self.questions[i:i+batch_size], convert_to_tensor=True)
+                for i in range(0, len(self.questions), batch_size)
+            ]
+            self.qa_embeddings = torch.cat(embeddings) if len(embeddings) > 1 else embeddings[0]
+            return True
         except Exception as e:
-            st.error(f"Failed to load Q&A data: {str(e)}")
+            st.error(f"Failed to load Q&A data: {e}")
             return False
 
     @lru_cache(maxsize=config.MAX_CACHE_SIZE)
-    def get_cached_response(_self, processed_query):
-        query_embedding = _self.embedding_model.encode(processed_query, convert_to_tensor=True)
-        scores = util.pytorch_cos_sim(query_embedding, _self.qa_embeddings)[0]
+    def get_cached_response(self, processed_query):
+        query_embedding = self.embedding_model.encode(processed_query, convert_to_tensor=True)
+        scores = util.pytorch_cos_sim(query_embedding, self.qa_embeddings)[0]
         best_score = float(scores.max())
         best_idx = int(scores.argmax())
-        return best_score, _self.answers[best_idx], _self.questions[best_idx]
+        return best_score, self.answers[best_idx], self.questions[best_idx]
 
     def get_best_match(self, user_input):
-        try:
-            if not self.qa_embeddings:
-                return 0, "", ""
-                
-            # Check common responses first
-            lower_input = user_input.lower().strip()
-            if lower_input in self.common_responses:
-                return 1.0, self.common_responses[lower_input], lower_input
-                
-            return self.get_cached_response(user_input)
-        except Exception as e:
-            st.error(f"Semantic search error: {str(e)}")
+        if self.qa_embeddings is None:
             return 0, "", ""
 
+        lower_input = user_input.lower().strip()
+        if lower_input in self.common_responses:
+            return 1.0, self.common_responses[lower_input], lower_input
+
+        return self.get_cached_response(user_input)
+
     def generate_fallback_response(self, user_input, user_name, user_dept):
+        if not config.OPENAI_API_KEY:
+            return "I'm temporarily unavailable due to missing API key."
         try:
-            prompt = f"""As Crescent University's assistant, provide accurate information to {user_name} ({user_dept}).
-            Question: {user_input}
-            Answer concisely:"""
-            
+            prompt = f"As Crescent University's assistant, provide accurate information to {user_name} ({user_dept}). Question: {user_input} Answer concisely:"
             response = openai.ChatCompletion.create(
                 model=self.llm_model,
                 messages=[{"role": "system", "content": prompt}],
@@ -241,9 +147,8 @@ class AIService:
                 max_tokens=500
             )
             return response["choices"][0]["message"]["content"].strip()
-        except openai.error.OpenAIError as e:
-            st.error(f"API Error: {str(e)}")
-            return "I'm temporarily unavailable. Please try again later."
+        except Exception as e:
+            return f"AI error: {str(e)}"
 
 # --- Chat Interface ---
 class ChatInterface:
