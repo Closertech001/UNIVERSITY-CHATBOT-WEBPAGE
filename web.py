@@ -19,7 +19,7 @@ sym_spell.load_dictionary("frequency_dictionary_en_82_765.txt", 0, 1)
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # --- Load Q&A Data ---
-with open("qa_dataset.json", "r") as f:
+with open("qa_data.json", "r") as f:
     qa_data = json.load(f)
     questions = [item['question'] for item in qa_data]
     answers = [item['answer'] for item in qa_data]
