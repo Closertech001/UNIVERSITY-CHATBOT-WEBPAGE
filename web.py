@@ -256,12 +256,14 @@ class ChatInterface:
                 border-radius: 10px;
                 margin-bottom: 5px;
                 text-align: right;
+                font-color: #000;
             }
             .message-bubble-bot {
                 background-color: #F1F0F0;
                 padding: 10px;
                 border-radius: 10px;
                 margin-bottom: 10px;
+                font-color: #000;
             }
             .bot-name {
                 font-weight: bold;
