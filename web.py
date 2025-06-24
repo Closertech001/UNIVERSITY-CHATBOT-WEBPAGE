@@ -1,4 +1,4 @@
-# University Chatbot - Final Working Version
+# University Chatbot - Optimized Version
 import streamlit as st
 import json
 import time
@@ -7,13 +7,15 @@ from sentence_transformers import SentenceTransformer, util
 from symspellpy import SymSpell
 import openai
 import os
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 
-# --- Page Configuration (MUST be first Streamlit command) ---
+# --- Page Configuration ---
 st.set_page_config(
     page_title="🎓 Crescent Uni Assistant",
     layout="wide",
     menu_items={
-        'About': "Crescent University Chatbot v2.2",
+        'About': "Crescent University Chatbot v3.0 (Optimized)",
         'Get Help': 'mailto:support@crescent.edu',
         'Report a bug': "mailto:it-support@crescent.edu"
     }
@@ -28,6 +30,8 @@ class Config:
         self.LLM_MODEL = "gpt-4"
         self.EMBEDDING_MODEL = "all-MiniLM-L6-v2"
         self.SPELL_CHECKER_DICT = "frequency_dictionary_en_82_765.txt"
+        self.MAX_CACHE_SIZE = 1000
+        self.DB_BATCH_SIZE = 5
 
 config = Config()
 openai.api_key = config.OPENAI_API_KEY
@@ -68,6 +72,7 @@ class DatabaseManager:
     def __init__(self, db_name="chat_memory.db"):
         self.db_name = db_name
         self.conn = None
+        self._batch_buffer = []
 
     def __enter__(self):
         try:
@@ -95,15 +100,26 @@ class DatabaseManager:
 
     def store_conversation(self, session_id, user_name, user_dept, question, answer):
         try:
+            self._batch_buffer.append((session_id, user_name, user_dept, question, answer))
+            if len(self._batch_buffer) >= config.DB_BATCH_SIZE:
+                self._flush_buffer()
+            return True
+        except Exception:
+            return False
+
+    def _flush_buffer(self):
+        if not self._batch_buffer:
+            return
+        try:
             cursor = self.conn.cursor()
-            cursor.execute("""
+            cursor.executemany("""
                 INSERT INTO memory (session_id, user_name, user_dept, question, answer)
                 VALUES (?, ?, ?, ?, ?)
-            """, (session_id, user_name, user_dept, question, answer))
+            """, self._batch_buffer)
             self.conn.commit()
-            return True
+            self._batch_buffer = []
         except sqlite3.Error:
-            return False
+            pass
 
     def clean_old_records(self, days=30):
         try:
@@ -118,17 +134,35 @@ class DatabaseManager:
             return 0
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self._flush_buffer()
         if self.conn:
             self.conn.close()
 
 # --- AI Service ---
 class AIService:
-    def __init__(self, embedding_model, llm_model):
-        self.embedding_model = embedding_model
-        self.llm_model = llm_model
-        self.qa_embeddings = None
-        self.questions = []
-        self.answers = []
+    @st.cache_resource
+    def __init__(_self, embedding_model_name, llm_model):
+        _self.embedding_model = SentenceTransformer(
+            embedding_model_name,
+            device='cpu',
+            encode_kwargs={
+                'normalize_embeddings': True,
+                'show_progress_bar': False,
+                'batch_size': 32
+            }
+        )
+        _self.llm_model = llm_model
+        _self.qa_embeddings = None
+        _self.questions = []
+        _self.answers = []
+        _self.common_responses = {
+            "hello": "Hello! How can I help you today?",
+            "hi": "Hi there! What would you like to know about Crescent University?",
+            "thanks": "You're welcome! Is there anything else I can help with?",
+            "thank you": "You're welcome! Is there anything else I can help with?",
+            "goodbye": "Goodbye! Have a great day!",
+            "bye": "Goodbye! Come back if you have more questions!"
+        }
 
     @st.cache_data
     def load_qa_data(_self, qa_file="qa_data.json"):
@@ -143,16 +177,25 @@ class AIService:
             st.error(f"Failed to load Q&A data: {str(e)}")
             return False
 
+    @lru_cache(maxsize=config.MAX_CACHE_SIZE)
+    def get_cached_response(_self, processed_query):
+        query_embedding = _self.embedding_model.encode(processed_query, convert_to_tensor=True)
+        scores = util.pytorch_cos_sim(query_embedding, _self.qa_embeddings)[0]
+        best_score = float(scores.max())
+        best_idx = int(scores.argmax())
+        return best_score, _self.answers[best_idx], _self.questions[best_idx]
+
     def get_best_match(self, user_input):
         try:
             if not self.qa_embeddings:
                 return 0, "", ""
                 
-            query_embedding = self.embedding_model.encode(user_input, convert_to_tensor=True)
-            scores = util.pytorch_cos_sim(query_embedding, self.qa_embeddings)[0]
-            best_score = float(scores.max())
-            best_idx = int(scores.argmax())
-            return best_score, self.answers[best_idx], self.questions[best_idx]
+            # Check common responses first
+            lower_input = user_input.lower().strip()
+            if lower_input in self.common_responses:
+                return 1.0, self.common_responses[lower_input], lower_input
+                
+            return self.get_cached_response(user_input)
         except Exception as e:
             st.error(f"Semantic search error: {str(e)}")
             return 0, "", ""
@@ -179,6 +222,7 @@ class ChatInterface:
     def __init__(self):
         self._init_session_state()
         self._setup_ui_style()
+        self.executor = ThreadPoolExecutor(max_workers=4)
         
     def _init_session_state(self):
         if 'history' not in st.session_state:
@@ -212,6 +256,9 @@ class ChatInterface:
             }
             .stTextArea textarea {
                 min-height: 100px;
+            }
+            .stSpinner > div {
+                text-align: center;
             }
             </style>
         """, unsafe_allow_html=True)
@@ -259,21 +306,27 @@ class ChatInterface:
             st.warning("Please enter a question")
             return
             
-        with st.spinner("Searching for the best answer..."):
+        # Add message immediately
+        st.session_state.history.append((user_query, "Thinking..."))
+        self._display_chat_history()
+        
+        # Process in background
+        def process_query():
             processed = text_processor.preprocess_input(user_query)
             score, best_answer, matched_question = ai_service.get_best_match(processed)
             
             if score > config.SIMILARITY_THRESHOLD:
-                answer = best_answer
-            else:
-                answer = ai_service.generate_fallback_response(
-                    user_query,
-                    st.session_state.user_name,
-                    st.session_state.user_dept
-                )
-            
-            st.session_state.history.append((user_query, answer))
-            
+                return best_answer
+            return ai_service.generate_fallback_response(
+                user_query,
+                st.session_state.user_name,
+                st.session_state.user_dept
+            )
+        
+        # Run in thread and update when done
+        def update_answer():
+            answer = process_query()
+            st.session_state.history[-1] = (user_query, answer)
             if db_manager:
                 db_manager.store_conversation(
                     str(time.time()),
@@ -282,6 +335,9 @@ class ChatInterface:
                     user_query,
                     answer
                 )
+            st.experimental_rerun()
+            
+        self.executor.submit(update_answer)
 
     def _show_follow_up_suggestions(self, ai_service, text_processor, db_manager):
         if st.session_state.history:
@@ -317,4 +373,36 @@ def main():
     sym_spell.load_dictionary(config.SPELL_CHECKER_DICT, 0, 1)
     
     # Initialize services
-    text_processor
+    text_processor = TextProcessor(sym_spell)
+    ai_service = AIService(config.EMBEDDING_MODEL, config.LLM_MODEL)
+    
+    # Load Q&A data
+    if not ai_service.load_qa_data():
+        st.error("Failed to initialize knowledge base. Some functionality may be limited.")
+        st.stop()
+    
+    # Initialize database and clean old records
+    with DatabaseManager() as db_manager:
+        if db_manager:
+            db_manager.clean_old_records(config.DATA_RETENTION_DAYS)
+        
+        # Initialize chat interface
+        chat_interface = ChatInterface()
+        
+        # Split layout into sidebar and main area
+        with st.sidebar:
+            st.image("https://via.placeholder.com/200x50?text=Crescent+University", width=200)
+            chat_interface.show_profile_section()
+            st.markdown("---")
+            st.markdown("**About this assistant:**")
+            st.markdown("""
+                - Answers questions about Crescent University
+                - Provides admission and course information
+                - Maintains conversation history
+            """)
+        
+        # Main chat interface
+        chat_interface.show_chat_interface(ai_service, text_processor, db_manager)
+
+if __name__ == "__main__":
+    main()
