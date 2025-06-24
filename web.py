@@ -247,37 +247,6 @@ class ChatInterface:
         if 'anonymous_mode' not in st.session_state:
             st.session_state.anonymous_mode = False
 
-    def _setup_ui_style(self):
-        st.markdown("""
-            <style>
-            .message-bubble-user {
-                background-color: #DCF8C6;
-                padding: 10px;
-                border-radius: 10px;
-                margin-bottom: 5px;
-                text-align: right;
-                font-color: #000000;
-            }
-            .message-bubble-bot {
-                background-color: #F1F0F0;
-                padding: 10px;
-                border-radius: 10px;
-                margin-bottom: 10px;
-                font-color: #000000;
-            }
-            .bot-name {
-                font-weight: bold;
-                color: #4b4b4b;
-            }
-            .stTextArea textarea {
-                min-height: 100px;
-            }
-            .stSpinner > div {
-                text-align: center;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-
     def show_profile_section(self):
         with st.expander("👤 Profile Settings", expanded=True):
             st.session_state.anonymous_mode = st.checkbox(
