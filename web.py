@@ -323,28 +323,6 @@ class ChatInterface:
             
         self.executor.submit(update_answer)
 
-    def _show_follow_up_suggestions(self, ai_service, text_processor, db_manager):
-        if st.session_state.history:
-            with st.expander("🔍 Follow-up questions"):
-                follow_up = st.radio(
-                    "Select a follow-up:",
-                    options=[
-                        "",
-                        "Can you explain more about this?",
-                        "What are the requirements?",
-                        "Are there related courses?",
-                        "When is the deadline?"
-                    ],
-                    horizontal=True
-                )
-                if follow_up:
-                    self._process_user_query(
-                        f"{st.session_state.history[-1][0]} - {follow_up}",
-                        ai_service,
-                        text_processor,
-                        db_manager
-                    )
-
     def _display_chat_history(self):
         for q, a in reversed(st.session_state.history):
             st.markdown(f"<div class='message-bubble-user'>🙋‍♂️ {q}</div>", unsafe_allow_html=True)
