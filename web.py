@@ -3,6 +3,7 @@ import streamlit as st
 import json
 import time
 import sqlite3
+import torch
 from sentence_transformers import SentenceTransformer, util
 from symspellpy import SymSpell
 import openai
@@ -174,6 +175,11 @@ class AIService:
                 _self.questions = [item['question'] for item in qa_data]
                 _self.answers = [item['answer'] for item in qa_data]
                 
+                # Verify we have questions to process
+                if not _self.questions:
+                    st.warning("Q&A data file is empty")
+                    return False
+                
                 # Load embeddings in smaller batches if needed
                 batch_size = 32
                 embeddings = []
@@ -181,8 +187,20 @@ class AIService:
                     batch = _self.questions[i:i + batch_size]
                     embeddings.append(_self.embedding_model.encode(batch, convert_to_tensor=True))
                 
-                _self.qa_embeddings = torch.cat(embeddings) if len(embeddings) > 1 else embeddings[0]
+                # Combine batch embeddings
+                if embeddings:
+                    _self.qa_embeddings = torch.cat(embeddings) if len(embeddings) > 1 else embeddings[0]
+                else:
+                    st.warning("No embeddings were generated")
+                    return False
+                    
                 return True
+        except FileNotFoundError:
+            st.error(f"Q&A data file not found: {qa_file}")
+            return False
+        except json.JSONDecodeError:
+            st.error(f"Invalid JSON format in Q&A data file: {qa_file}")
+            return False
         except Exception as e:
             st.error(f"Failed to load Q&A data: {str(e)}")
             return False
