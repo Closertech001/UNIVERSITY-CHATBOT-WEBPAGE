@@ -1,4 +1,4 @@
-# University Chatbot - Complete Production Version
+# University Chatbot - Final Working Version
 import streamlit as st
 import json
 import time
@@ -7,20 +7,19 @@ from sentence_transformers import SentenceTransformer, util
 from symspellpy import SymSpell
 import openai
 import os
-from datetime import datetime, timedelta
 
 # --- Page Configuration (MUST be first Streamlit command) ---
 st.set_page_config(
     page_title="🎓 Crescent Uni Assistant",
     layout="wide",
     menu_items={
-        'About': "Crescent University Chatbot v2.1",
-        'Get Help': 'https://crescent.edu/support',
-        'Report a bug': "https://crescent.edu/bug-report"
+        'About': "Crescent University Chatbot v2.2",
+        'Get Help': 'mailto:support@crescent.edu',
+        'Report a bug': "mailto:it-support@crescent.edu"
     }
 )
 
-# --- Application Constants ---
+# --- Application Setup ---
 class Config:
     def __init__(self):
         self.OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
@@ -29,47 +28,47 @@ class Config:
         self.LLM_MODEL = "gpt-4"
         self.EMBEDDING_MODEL = "all-MiniLM-L6-v2"
         self.SPELL_CHECKER_DICT = "frequency_dictionary_en_82_765.txt"
-        
+
 config = Config()
 openai.api_key = config.OPENAI_API_KEY
 
-# --- Text Processing Utilities ---
+# --- Text Processor ---
 class TextProcessor:
     ABBREVIATIONS = {
         "u": "you", "ur": "your", "r": "are", "dept": "department",
         "info": "information", "sch": "school", "cn": "can"
     }
 
-    @staticmethod
-    def normalize_text(text):
+    def __init__(self, spell_checker):
+        self.spell_checker = spell_checker
+
+    def normalize_text(self, text):
         if not text or not isinstance(text, str):
             return ""
         words = text.split()
-        return ' '.join([TextProcessor.ABBREVIATIONS.get(w.lower(), w) for w in words])
+        return ' '.join([self.ABBREVIATIONS.get(w.lower(), w) for w in words])
 
-    @staticmethod
-    def correct_spelling(text, spell_checker):
+    def correct_spelling(self, text):
         try:
-            if spell_checker and text:
-                suggestions = spell_checker.lookup_compound(text, max_edit_distance=2)
+            if self.spell_checker and text:
+                suggestions = self.spell_checker.lookup_compound(text, max_edit_distance=2)
                 return suggestions[0].term if suggestions else text
             return text
         except Exception:
             return text
 
-    @classmethod
-    def preprocess_input(cls, user_input, spell_checker):
+    def preprocess_input(self, user_input):
         if not user_input:
             return ""
-        text = cls.normalize_text(user_input)
-        return cls.correct_spelling(text, spell_checker)
+        text = self.normalize_text(user_input)
+        return self.correct_spelling(text)
 
-# --- Database Handler ---
+# --- Database Manager ---
 class DatabaseManager:
     def __init__(self, db_name="chat_memory.db"):
-        self.conn = None
         self.db_name = db_name
-        
+        self.conn = None
+
     def __enter__(self):
         try:
             self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
@@ -122,7 +121,7 @@ class DatabaseManager:
         if self.conn:
             self.conn.close()
 
-# --- AI Services ---
+# --- AI Service ---
 class AIService:
     def __init__(self, embedding_model, llm_model):
         self.embedding_model = embedding_model
@@ -130,14 +129,15 @@ class AIService:
         self.qa_embeddings = None
         self.questions = []
         self.answers = []
-        
-    def load_qa_data(self, qa_file="qa_data.json"):
+
+    @st.cache_data
+    def load_qa_data(_self, qa_file="qa_data.json"):
         try:
             with open(qa_file, "r") as f:
                 qa_data = json.load(f)
-                self.questions = [item['question'] for item in qa_data]
-                self.answers = [item['answer'] for item in qa_data]
-                self.qa_embeddings = self.embedding_model.encode(self.questions, convert_to_tensor=True)
+                _self.questions = [item['question'] for item in qa_data]
+                _self.answers = [item['answer'] for item in qa_data]
+                _self.qa_embeddings = _self.embedding_model.encode(_self.questions, convert_to_tensor=True)
                 return True
         except Exception as e:
             st.error(f"Failed to load Q&A data: {str(e)}")
@@ -159,12 +159,9 @@ class AIService:
 
     def generate_fallback_response(self, user_input, user_name, user_dept):
         try:
-            prompt = f"""You are a helpful assistant for Crescent University. 
-            You are talking to {user_name} from {user_dept}. 
-            Provide a concise, accurate answer to their question.
-            
+            prompt = f"""As Crescent University's assistant, provide accurate information to {user_name} ({user_dept}).
             Question: {user_input}
-            Answer:"""
+            Answer concisely:"""
             
             response = openai.ChatCompletion.create(
                 model=self.llm_model,
@@ -175,9 +172,9 @@ class AIService:
             return response["choices"][0]["message"]["content"].strip()
         except openai.error.OpenAIError as e:
             st.error(f"API Error: {str(e)}")
-            return "I'm having trouble connecting to the knowledge base. Please try again later."
+            return "I'm temporarily unavailable. Please try again later."
 
-# --- UI Components ---
+# --- Chat Interface ---
 class ChatInterface:
     def __init__(self):
         self._init_session_state()
@@ -254,7 +251,7 @@ class ChatInterface:
                 st.session_state.history = []
                 st.experimental_rerun()
 
-        self._show_follow_up_suggestions()
+        self._show_follow_up_suggestions(ai_service, text_processor, db_manager)
         self._display_chat_history()
 
     def _process_user_query(self, user_query, ai_service, text_processor, db_manager):
@@ -263,7 +260,7 @@ class ChatInterface:
             return
             
         with st.spinner("Searching for the best answer..."):
-            processed = text_processor.preprocess_input(user_query, sym_spell)
+            processed = text_processor.preprocess_input(user_query)
             score, best_answer, matched_question = ai_service.get_best_match(processed)
             
             if score > config.SIMILARITY_THRESHOLD:
@@ -286,7 +283,7 @@ class ChatInterface:
                     answer
                 )
 
-    def _show_follow_up_suggestions(self):
+    def _show_follow_up_suggestions(self, ai_service, text_processor, db_manager):
         if st.session_state.history:
             with st.expander("🔍 Follow-up questions"):
                 follow_up = st.radio(
@@ -315,29 +312,9 @@ class ChatInterface:
 
 # --- Main Application ---
 def main():
+    # Initialize spell checker
+    sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+    sym_spell.load_dictionary(config.SPELL_CHECKER_DICT, 0, 1)
+    
     # Initialize services
-    with DatabaseManager() as db_manager:
-        if db_manager:
-            db_manager.clean_old_records(config.DATA_RETENTION_DAYS)
-        
-        # Load models
-        sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-        sym_spell.load_dictionary(config.SPELL_CHECKER_DICT, 0, 1)
-        
-        embedding_model = SentenceTransformer(config.EMBEDDING_MODEL)
-        ai_service = AIService(embedding_model, config.LLM_MODEL)
-        ai_service.load_qa_data()
-        
-        text_processor = TextProcessor()
-        chat_interface = ChatInterface()
-        
-        # Show UI
-        chat_interface.show_profile_section()
-        
-        if not st.session_state.anonymous_mode and not st.session_state.user_name:
-            st.info("Please set up your profile or enable anonymous mode to start chatting.")
-        else:
-            chat_interface.show_chat_interface(ai_service, text_processor, db_manager)
-
-if __name__ == "__main__":
-    main()
+    text_processor
