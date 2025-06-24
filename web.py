@@ -131,7 +131,7 @@ class AIService:
         self.questions = []
         self.answers = []
         
-    def load_qa_data(self, qa_file="qa_dataset.json"):
+    def load_qa_data(self, qa_file="qa_data.json"):
         try:
             with open(qa_file, "r") as f:
                 qa_data = json.load(f)
