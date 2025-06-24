@@ -1,4 +1,4 @@
-# --- Streamlit University Chatbot with Enhanced Memory and UI ---
+# --- Streamlit University Chatbot with Enhanced Memory and Robust Input UI ---
 
 import streamlit as st
 import json
@@ -36,7 +36,7 @@ sym_spell.load_dictionary("frequency_dictionary_en_82_765.txt", 0, 1)
 model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # --- Q&A Data ---
-with open("qa_data.json", "r") as f:
+with open("qa_dataset.json", "r") as f:
     qa_data = json.load(f)
     questions = [item['question'] for item in qa_data]
     answers = [item['answer'] for item in qa_data]
@@ -108,15 +108,16 @@ st.markdown("👋 Welcome! Ask me anything about **admissions**, **courses**, **
 
 # --- Memory Setup ---
 if "user_name" not in st.session_state:
-    st.session_state.user_name = st.text_input("👤 What's your name?")
-
+    st.session_state.user_name = ""
 if "user_dept" not in st.session_state:
-    st.session_state.user_dept = st.text_input("🏫 What department are you in?")
-
+    st.session_state.user_dept = ""
 if "history" not in st.session_state:
     st.session_state.history = []
 
-if st.session_state.user_name and st.session_state.user_dept:
+st.session_state.user_name = st.text_input("👤 What's your name?", value=st.session_state.user_name)
+st.session_state.user_dept = st.text_input("🏫 What department are you in?", value=st.session_state.user_dept)
+
+if st.session_state.user_name.strip() != "" and st.session_state.user_dept.strip() != "":
     user_query = st.text_input("💬 Your question:", key="user_input")
     if st.button("Ask") and user_query:
         with st.spinner("Typing..."):
@@ -137,7 +138,7 @@ if st.session_state.user_name and st.session_state.user_dept:
             """, (st.session_state.user_name, st.session_state.user_name, st.session_state.user_dept, user_query, answer))
             conn.commit()
 else:
-    st.info("Please fill in your name and department to start chatting.")
+    st.info("Please enter both your name and department to start chatting.")
 
 # --- Display Chat History ---
 for q, a in reversed(st.session_state.history):
