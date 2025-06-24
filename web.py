@@ -1,4 +1,4 @@
-# Cleaned version with fixes applied
+# Cleaned version with fixes applied and streaming enabled
 import streamlit as st
 import json
 import time
@@ -28,8 +28,8 @@ class Config:
         self.OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
         self.DATA_RETENTION_DAYS = 30
         self.SIMILARITY_THRESHOLD = 0.70
-        self.LLM_MODEL = "gpt-4"
-        self.EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+        self.LLM_MODEL = "gpt-3.5-turbo"  # switched to faster model
+        self.EMBEDDING_MODEL = "all-MiniLM-L12-v2"  # better trade-off
         self.SPELL_CHECKER_DICT = "frequency_dictionary_en_82_765.txt"
         self.MAX_CACHE_SIZE = 1000
         self.DB_BATCH_SIZE = 5
@@ -67,7 +67,7 @@ class TextProcessor:
     def correct_spelling(self, text):
         try:
             if self.spell_checker and text:
-                suggestions = self.spell_checker.lookup_compound(text, max_edit_distance=2)
+                suggestions = self.spell_checker.lookup_compound(text, max_edit_distance=1)  # faster
                 return suggestions[0].term if suggestions else text
             return text
         except Exception:
@@ -135,20 +135,27 @@ class AIService:
 
         return self.get_cached_response(user_input)
 
-    def generate_fallback_response(self, user_input, user_name, user_dept):
+    def stream_fallback_response(self, user_input, user_name, user_dept):
         if not config.OPENAI_API_KEY:
-            return "I'm temporarily unavailable due to missing API key."
+            yield "I'm temporarily unavailable due to missing API key."
+            return
+
+        prompt = f"As Crescent University's assistant, provide accurate information to {user_name} ({user_dept}). Question: {user_input} Answer concisely:"
+
         try:
-            prompt = f"As Crescent University's assistant, provide accurate information to {user_name} ({user_dept}). Question: {user_input} Answer concisely:"
             response = openai.ChatCompletion.create(
                 model=self.llm_model,
                 messages=[{"role": "system", "content": prompt}],
                 temperature=0.3,
-                max_tokens=500
+                max_tokens=500,
+                stream=True
             )
-            return response["choices"][0]["message"]["content"].strip()
+            for chunk in response:
+                content = chunk["choices"][0].get("delta", {}).get("content")
+                if content:
+                    yield content
         except Exception as e:
-            return f"AI error: {str(e)}"
+            yield f"[Error] {str(e)}"
 
 # --- Database Manager ---
 class DatabaseManager:
