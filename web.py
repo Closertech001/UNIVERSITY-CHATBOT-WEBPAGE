@@ -142,27 +142,29 @@ class DatabaseManager:
 class AIService:
     @st.cache_resource
     def __init__(_self, embedding_model_name, llm_model):
-        _self.embedding_model = SentenceTransformer(
-            embedding_model_name,
-            device='cpu',
-            encode_kwargs={
-                'normalize_embeddings': True,
-                'show_progress_bar': False,
-                'batch_size': 32
+        try:
+            # Initialize with more conservative settings
+            _self.embedding_model = SentenceTransformer(
+                embedding_model_name,
+                device='cpu',
+                use_auth_token=False,
+                cache_folder='./model_cache'
+            )
+            _self.llm_model = llm_model
+            _self.qa_embeddings = None
+            _self.questions = []
+            _self.answers = []
+            _self.common_responses = {
+                "hello": "Hello! How can I help you today?",
+                "hi": "Hi there! What would you like to know about Crescent University?",
+                "thanks": "You're welcome! Is there anything else I can help with?",
+                "thank you": "You're welcome! Is there anything else I can help with?",
+                "goodbye": "Goodbye! Have a great day!",
+                "bye": "Goodbye! Come back if you have more questions!"
             }
-        )
-        _self.llm_model = llm_model
-        _self.qa_embeddings = None
-        _self.questions = []
-        _self.answers = []
-        _self.common_responses = {
-            "hello": "Hello! How can I help you today?",
-            "hi": "Hi there! What would you like to know about Crescent University?",
-            "thanks": "You're welcome! Is there anything else I can help with?",
-            "thank you": "You're welcome! Is there anything else I can help with?",
-            "goodbye": "Goodbye! Have a great day!",
-            "bye": "Goodbye! Come back if you have more questions!"
-        }
+        except Exception as e:
+            st.error(f"Failed to initialize AI service: {str(e)}")
+            raise RuntimeError("AI service initialization failed") from e
 
     @st.cache_data
     def load_qa_data(_self, qa_file="qa_data.json"):
@@ -171,7 +173,15 @@ class AIService:
                 qa_data = json.load(f)
                 _self.questions = [item['question'] for item in qa_data]
                 _self.answers = [item['answer'] for item in qa_data]
-                _self.qa_embeddings = _self.embedding_model.encode(_self.questions, convert_to_tensor=True)
+                
+                # Load embeddings in smaller batches if needed
+                batch_size = 32
+                embeddings = []
+                for i in range(0, len(_self.questions), batch_size):
+                    batch = _self.questions[i:i + batch_size]
+                    embeddings.append(_self.embedding_model.encode(batch, convert_to_tensor=True))
+                
+                _self.qa_embeddings = torch.cat(embeddings) if len(embeddings) > 1 else embeddings[0]
                 return True
         except Exception as e:
             st.error(f"Failed to load Q&A data: {str(e)}")
