@@ -285,27 +285,47 @@ class ChatInterface:
         self._show_follow_up_suggestions(ai_service, text_processor, db_manager)
         self._display_chat_history()
 
-    def _process_user_query(self, user_query, ai_service, text_processor, db_manager):
+        def _process_user_query(self, user_query, ai_service, text_processor, db_manager):
         if not user_query.strip():
             st.warning("Please enter a question")
             return
-            
-        # Add message immediately
-        st.session_state.history.append((user_query, "Thinking..."))
+
+        # Display user message
+        st.session_state.history.append((user_query, ""))
         self._display_chat_history()
-        
-        # Process in background
-        def process_query():
-            processed = text_processor.preprocess_input(user_query)
-            score, best_answer, matched_question = ai_service.get_best_match(processed)
-            
-            if score > config.SIMILARITY_THRESHOLD:
-                return best_answer
-            return ai_service.generate_fallback_response(
-                user_query,
+
+        # Create a container for the bot's response
+        placeholder = st.empty()
+        full_response = ""
+
+        # Process input
+        processed = text_processor.preprocess_input(user_query)
+        score, best_answer, matched_question = ai_service.get_best_match(processed)
+
+        if score > config.SIMILARITY_THRESHOLD:
+            full_response = best_answer
+            placeholder.markdown(f"<div class='message-bubble-bot'><span class='bot-name'>🤖 Bot:</span> {full_response}</div>", unsafe_allow_html=True)
+        else:
+            # Stream OpenAI fallback response
+            for chunk in ai_service.stream_fallback_response(user_query, st.session_state.user_name, st.session_state.user_dept):
+                full_response += chunk
+                placeholder.markdown(f"<div class='message-bubble-bot'><span class='bot-name'>🤖 Bot:</span> {full_response}</div>", unsafe_allow_html=True)
+
+        # Store final response
+        st.session_state.history[-1] = (user_query, full_response)
+
+        # Save to DB
+        if db_manager:
+            db_manager.store_conversation(
+                str(time.time()),
                 st.session_state.user_name,
-                st.session_state.user_dept
+                st.session_state.user_dept,
+                user_query,
+                full_response
             )
+
+        # Update history view
+        self._display_chat_history()
         
         # Run in thread and update when done
         def update_answer():
