@@ -20,7 +20,7 @@ st.set_page_config(page_title="🎓 Crescent Uni Assistant Pro", layout="wide")
 class Config:
     def __init__(self):
         self.OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
-        self.SIMILARITY_THRESHOLD = 0.70
+        self.SIMILARITY_THRESHOLD = 0.65
         self.LLM_MODEL = "gpt-3.5-turbo"
         self.EMBEDDING_MODEL = "all-MiniLM-L12-v2"
         self.DOCS_DIR = "./university_docs/"
@@ -123,23 +123,6 @@ class AIService:
             corrected.append(suggestions[0].term if suggestions else word)
         return " ".join(corrected)
 
-    def load_qa_data(self):
-        try:
-            with open("qa_data.json", "r") as f:
-                data = json.load(f)
-                self.questions = [item['question'] for item in data]
-                self.answers = [item['answer'] for item in data]
-                self.qa_embeddings = self.embedding_model.encode(self.questions, convert_to_tensor=True)
-        except Exception as e:
-            st.error(f"Failed to load QA data: {str(e)}")
-
-    def build_rag_index(self):
-        if os.path.exists(config.DOCS_DIR):
-            documents = SimpleDirectoryReader(config.DOCS_DIR).load_data()
-            llm = LlamaOpenAI(model=config.LLM_MODEL, temperature=0.2)
-            service_context = ServiceContext.from_defaults(llm=llm)
-            self.rag_index = VectorStoreIndex.from_documents(documents, service_context=service_context)
-
     def expand_abbreviations(self, text):
         words = text.split()
         expanded = [ABBREVIATIONS.get(word, word) for word in words]
@@ -156,6 +139,23 @@ class AIService:
         query = self.expand_abbreviations(query)
         query = self.replace_synonyms(query)
         return query
+
+    def load_qa_data(self):
+        try:
+            with open("qa_data.json", "r") as f:
+                data = json.load(f)
+                self.questions = [self.preprocess_input(item['question']) for item in data]
+                self.answers = [item['answer'] for item in data]
+                self.qa_embeddings = self.embedding_model.encode(self.questions, convert_to_tensor=True)
+        except Exception as e:
+            st.error(f"Failed to load QA data: {str(e)}")
+
+    def build_rag_index(self):
+        if os.path.exists(config.DOCS_DIR):
+            documents = SimpleDirectoryReader(config.DOCS_DIR).load_data()
+            llm = LlamaOpenAI(model=config.LLM_MODEL, temperature=0.2)
+            service_context = ServiceContext.from_defaults(llm=llm)
+            self.rag_index = VectorStoreIndex.from_documents(documents, service_context=service_context)
 
     def is_followup(self, query):
         return any(word in query.lower() for word in ["what about", "how about", "that one", "those", "and fees", "the requirement"])
