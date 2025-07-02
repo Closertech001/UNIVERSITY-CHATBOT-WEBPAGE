@@ -9,3 +9,4 @@ python-dotenv>=1.0.1
 numpy>=1.24.0
 torch>=1.12.1
 uuid
+llama-index==0.10.28
