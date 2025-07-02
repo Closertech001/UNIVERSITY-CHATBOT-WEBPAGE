@@ -31,6 +31,33 @@ openai.api_key = config.OPENAI_API_KEY
 # --- Database Manager (SQLite) ---
 class DatabaseManager:
     def __init__(self):
+        self.conn = psycopg2.connect(
+            dbname=st.secrets.get("DB_NAME", "chatbot"),
+            user=st.secrets.get("DB_USER", "postgres"),
+            password=st.secrets.get("DB_PASSWORD", ""),
+            host=st.secrets.get("DB_HOST", "localhost")
+        )
+        with self.conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS unanswered (
+                    id SERIAL PRIMARY KEY,
+                    session_id TEXT,
+                    user_name TEXT,
+                    user_dept TEXT,
+                    question TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    source TEXT
+                )
+            """)
+            self.conn.commit()
+
+    def log_unanswered(self, session_id, user_name, user_dept, question, source):
+        with self.conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO unanswered (session_id, user_name, user_dept, question, source)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (session_id, user_name, user_dept, question, source))
+            self.conn.commit()
         self.conn = sqlite3.connect("chatbot.db", check_same_thread=False)
         self.create_tables()
 
@@ -217,10 +244,13 @@ class AIService:
 
         if score > config.SIMILARITY_THRESHOLD:
             return answer, "qa_match"
+        self.db.log_unanswered(st.session_state.session_id, st.session_state.user_name, st.session_state.user_dept, query, "qa_low_score")
 
         rag_answer = self.query_rag(query)
         if rag_answer and len(rag_answer) > 20:
+            if rag_answer:
             return rag_answer, "rag_system"
+        self.db.log_unanswered(st.session_state.session_id, st.session_state.user_name, st.session_state.user_dept, query, "rag_failed")
 
         context = "
 ".join([f"Q: {q}
@@ -251,6 +281,7 @@ Assistant:"
             )
             return response["choices"][0]["message"]["content"], "llm"
         except Exception as e:
+            self.db.log_unanswered(st.session_state.session_id, st.session_state.user_name, st.session_state.user_dept, query, "error")
             return f"[LLM Error: {str(e)}]", "error" small_talk, "small_talk"
 
         score, answer, match = self.get_best_match(query)
