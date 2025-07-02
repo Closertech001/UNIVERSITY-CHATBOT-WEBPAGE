@@ -1,16 +1,17 @@
+# --- Imports ---
 import streamlit as st
 import json
 import time
-import psycopg2
 import os
 import openai
+import psycopg2
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, util
 from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 from llama_index.llms import OpenAI as LlamaOpenAI
-from concurrent.futures import ThreadPoolExecutor
+from textblob import TextBlob
 
-# --- Page Configuration ---
+# --- Page Config ---
 st.set_page_config(page_title="🎓 Crescent Uni Assistant Pro", layout="wide")
 
 # --- Config ---
@@ -102,8 +103,21 @@ class AIService:
             return str(engine.query(query))
         return None
 
-    def get_response(self, query, session_history=None, stream=False):
+    def detect_small_talk(self, query):
+        small_talk_triggers = ["hi", "hello", "hey", "good morning", "good afternoon", "how are you"]
+        for phrase in small_talk_triggers:
+            if phrase in query.lower():
+                return "Hello there! 😊 How can I assist you today?"
+        return None
+
+    def get_response(self, query, session_history=None):
         query = self.preprocess_input(query)
+
+        # Detect small talk first
+        small_talk = self.detect_small_talk(query)
+        if small_talk:
+            return small_talk, "small_talk"
+
         score, answer, match = self.get_best_match(query)
         if score > config.SIMILARITY_THRESHOLD:
             return answer, "qa_match"
@@ -113,35 +127,25 @@ class AIService:
             return rag_answer, "rag_system"
 
         context = "\n".join([f"Q: {q}\nA: {a}" for q, a in (session_history[-3:] if session_history else [])])
-        prompt = f"{context}\n\nUser: {query}\nAssistant:"
+        prompt = f"You are a helpful, friendly, and slightly humorous assistant for Crescent University.\nAlways keep responses clear, short, and encouraging.\n\n{context}\n\nUser: {query}\nAssistant:"
 
-        if stream:
-            try:
-                response = openai.ChatCompletion.create(
-                    model=self.llm_model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=500,
-                    stream=True
-                )
-                return response, "llm_stream"
-            except Exception as e:
-                return f"[Error: {str(e)}]", "error"
-        else:
+        try:
             response = openai.ChatCompletion.create(
                 model=self.llm_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=500
+                temperature=0.4,
+                max_tokens=600,
+                stream=True
             )
-            return response.choices[0].message.content, "llm_fallback"
+            return response, "llm_stream"
+        except Exception as e:
+            return f"[LLM Error: {str(e)}]", "error"
 
 # --- Chat Interface ---
 class ChatInterface:
     def __init__(self, ai_service, db):
         self.ai = ai_service
         self.db = db
-        self.executor = ThreadPoolExecutor()
         self.init_session()
 
     def init_session(self):
@@ -151,40 +155,40 @@ class ChatInterface:
             st.session_state.session_id = str(time.time())
 
     def show(self):
-        st.title("🎓 Crescent University Assistant Pro")
-        user_query = st.text_area("Ask me anything:", key="user_input")
+        st.title(":sparkles: Crescent University Assistant Pro")
 
-        if st.button("Ask"):
-            if user_query.strip():
-                st.session_state.history.append((user_query, ""))
-                self.executor.submit(self.respond, user_query)
-            else:
-                st.warning("Please enter a question.")
+        prompt = st.chat_input("Ask me anything about the university...")
+        if prompt:
+            st.session_state.history.append((prompt, ""))
+            self.respond(prompt)
 
         for q, a in st.session_state.history:
-            st.markdown(f"**🙋 You:** {q}")
+            with st.chat_message("user"):
+                st.markdown(q)
             if a:
-                st.markdown(f"**🤖 Assistant:** {a}")
+                with st.chat_message("assistant"):
+                    st.markdown(a)
 
     def respond(self, query):
-        placeholder = st.empty()
         full_response = ""
-        response, source = self.ai.get_response(query, st.session_state.history, stream=True)
+        response, source = self.ai.get_response(query, st.session_state.history)
 
         if source == "llm_stream":
             try:
-                for chunk in response:
-                    token = chunk.choices[0].delta.get("content", "")
-                    full_response += token
-                    placeholder.markdown(f"**🤖 Assistant:** {full_response}")
-                    time.sleep(0.02)
+                with st.chat_message("assistant"):
+                    message_placeholder = st.empty()
+                    for chunk in response:
+                        token = chunk.choices[0].delta.get("content", "")
+                        full_response += token
+                        message_placeholder.markdown(full_response + "|")
+                        time.sleep(0.03)
             except Exception as e:
                 full_response = f"[Stream Error: {str(e)}]"
+                st.error(full_response)
         else:
-            for word in response.split():
-                full_response += word + " "
-                placeholder.markdown(f"**🤖 Assistant:** {full_response}")
-                time.sleep(0.03)
+            full_response = response
+            with st.chat_message("assistant"):
+                st.markdown(full_response)
 
         st.session_state.history[-1] = (query, full_response)
         self.db.store_conversation(
@@ -194,7 +198,7 @@ class ChatInterface:
             "query": query, "source": source, "length": len(full_response)
         })
 
-# --- Run App ---
+# --- Main App ---
 def main():
     db = DatabaseManager()
     ai = AIService()
