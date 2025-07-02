@@ -2,7 +2,7 @@ streamlit
 openai
 psycopg2-binary
 sentence-transformers
-llama-index
-faiss-cpu
+symspellpy
 textblob
-python-dotenv
+llama-index==0.10.25  # Ensure compatibility with current API structure
+pkg_resources
