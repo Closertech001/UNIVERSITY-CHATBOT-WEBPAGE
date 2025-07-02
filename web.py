@@ -10,8 +10,7 @@ from sentence_transformers import SentenceTransformer, util
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 from llama_index.llms.openai import OpenAI as LlamaOpenAI
 from textblob import TextBlob
-from symspellpy.symspellpy import SymSpell
-import pkg_resources
+import difflib  # For dynamic typo correction
 
 # --- Page Config ---
 st.set_page_config(page_title="🎓 Crescent Uni Assistant Pro", layout="wide")
@@ -25,7 +24,6 @@ class Config:
         self.EMBEDDING_MODEL = "all-MiniLM-L12-v2"
         self.DOCS_DIR = "./university_docs/"
         self.ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
-        self.SYMSPELL_DICT_PATH = pkg_resources.resource_filename("symspellpy", "frequency_dictionary_en_82_765.txt")
 
 config = Config()
 openai.api_key = config.OPENAI_API_KEY
@@ -84,20 +82,11 @@ def detect_sentiment(text):
         return "positive"
     return "neutral"
 
-ABBREVIATIONS = {
-    "u": "you", "r": "are", "ur": "your", "cn": "can", "pls": "please", "asap": "as soon as possible"
-}
-
-SYNONYMS = {
-    "school fees": "tuition",
-    "hostel": "accommodation",
-    "it office": "ict department",
-    "lecturers": "academic staff",
-    "non-academic staff": "administrative staff",
-    "courses": "programs",
-    "bio": "biochemistry",
-    "comp sci": "computer science"
-}
+SYNONYM_CANDIDATES = [
+    "school fees", "tuition", "fees", "accommodation", "hostel", "ict department", "it department",
+    "academic staff", "lecturers", "non-academic staff", "admin staff", "programs", "courses",
+    "computer science", "comp sci", "biochemistry", "bio"
+]
 
 class AIService:
     def __init__(self):
@@ -107,37 +96,32 @@ class AIService:
         self.answers = []
         self.qa_embeddings = None
         self.rag_index = None
-        self.symspell = self.initialize_symspell()
+        self.synonym_embeddings = self.embedding_model.encode(SYNONYM_CANDIDATES, convert_to_tensor=True)
         self.load_qa_data()
         self.build_rag_index()
 
-    def initialize_symspell(self):
-        symspell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-        symspell.load_dictionary(config.SYMSPELL_DICT_PATH, term_index=0, count_index=1)
-        return symspell
-
     def correct_spelling(self, text):
-        corrected = []
+        corrected_words = []
         for word in text.split():
-            suggestions = self.symspell.lookup(word, verbosity=2)
-            corrected.append(suggestions[0].term if suggestions else word)
-        return " ".join(corrected)
+            close_matches = difflib.get_close_matches(word, SYNONYM_CANDIDATES, n=1, cutoff=0.85)
+            corrected_words.append(close_matches[0] if close_matches else word)
+        return " ".join(corrected_words)
 
-    def expand_abbreviations(self, text):
-        words = text.split()
-        expanded = [ABBREVIATIONS.get(word, word) for word in words]
-        return " ".join(expanded)
-
-    def replace_synonyms(self, text):
-        for key, val in SYNONYMS.items():
-            text = text.replace(key, val)
-        return text
+    def semantic_replace(self, query):
+        tokens = query.split()
+        updated = []
+        for token in tokens:
+            token_vec = self.embedding_model.encode(token, convert_to_tensor=True)
+            similarities = util.cos_sim(token_vec, self.synonym_embeddings)[0]
+            best_idx = int(similarities.argmax())
+            best_score = float(similarities[best_idx])
+            updated.append(SYNONYM_CANDIDATES[best_idx] if best_score > 0.8 else token)
+        return " ".join(updated)
 
     def preprocess_input(self, query):
         query = query.lower().strip()
         query = self.correct_spelling(query)
-        query = self.expand_abbreviations(query)
-        query = self.replace_synonyms(query)
+        query = self.semantic_replace(query)
         return query
 
     def load_qa_data(self):
@@ -157,17 +141,26 @@ class AIService:
             service_context = ServiceContext.from_defaults(llm=llm)
             self.rag_index = VectorStoreIndex.from_documents(documents, service_context=service_context)
 
-    def is_followup(self, query):
-        return any(word in query.lower() for word in ["what about", "how about", "that one", "those", "and fees", "the requirement"])
-
     def get_best_match(self, query):
         if self.qa_embeddings is None:
             return 0, None, None
         query_embedding = self.embedding_model.encode(query, convert_to_tensor=True)
         scores = util.cos_sim(query_embedding, self.qa_embeddings)[0]
-        best_score = float(scores.max())
-        best_index = int(scores.argmax())
-        return best_score, self.answers[best_index], self.questions[best_index]
+        sorted_scores = sorted([(i, float(s)) for i, s in enumerate(scores)], key=lambda x: -x[1])
+
+        if sorted_scores[0][1] >= config.SIMILARITY_THRESHOLD:
+            top_matches = sorted_scores[:3]  # take top 3 if possible
+            if top_matches[1][1] > 0.6:
+                options = [self.questions[i] for i, _ in top_matches]
+                clarification_prompt = "I found multiple similar questions. Did you mean:\n"
+                for idx, opt in enumerate(options):
+                    clarification_prompt += f"{idx+1}) {opt}\n"
+                clarification_prompt += "\nPlease respond with the number."
+                return 0.66, clarification_prompt, "clarification"
+
+            best_index = sorted_scores[0][0]
+            return sorted_scores[0][1], self.answers[best_index], self.questions[best_index]
+        return 0, None, None
 
     def query_rag(self, query):
         if self.rag_index:
@@ -195,20 +188,16 @@ class AIService:
         if small_talk:
             return small_talk, "small_talk"
 
-        if self.is_followup(query) and session_history:
-            last_topic = session_history[-1][0]
-            query = f"{last_topic}. Follow-up: {query}"
-
         score, answer, match = self.get_best_match(query)
+        if match == "clarification":
+            return answer, "clarification"
+
         if score > config.SIMILARITY_THRESHOLD:
             return answer, "qa_match"
 
         rag_answer = self.query_rag(query)
         if rag_answer and len(rag_answer) > 20:
             return rag_answer, "rag_system"
-
-        if score < config.SIMILARITY_THRESHOLD and (not rag_answer or len(rag_answer) < 20):
-            return "I'm not sure I fully understood that 🤔. Could you clarify or ask in another way?", "clarification"
 
         context = "\n".join([f"Q: {q}\nA: {a}" for q, a in (session_history[-3:] if session_history else [])])
         sentiment = detect_sentiment(query)
@@ -235,8 +224,8 @@ class AIService:
 
 # --- Chat Interface ---
 class ChatInterface:
-    def __init__(self, ai_service, db):
-        self.ai = ai_service
+    def __init__(self, ai, db):
+        self.ai = ai
         self.db = db
         self.init_session()
 
@@ -246,14 +235,34 @@ class ChatInterface:
         if 'session_id' not in st.session_state:
             st.session_state.session_id = str(time.time())
         if 'user_name' not in st.session_state:
-            st.session_state.user_name = st.text_input("Enter your name", "Anonymous")
+            st.session_state.user_name = ""
         if 'user_dept' not in st.session_state:
-            st.session_state.user_dept = st.selectbox("Your department", ["General", "Computer Science", "Mass Comm", "Biochem", "Other"])
+            st.session_state.user_dept = ""
 
     def show(self):
-        st.title(":sparkles: Crescent University Assistant Pro")
+        st.title("✨ Crescent University Assistant Pro")
 
-        prompt = st.chat_input("Ask me anything about the university...")
+        if not st.session_state.user_name:
+            st.session_state.user_name = st.text_input("👤 What is your name?")
+            return
+        if not st.session_state.user_dept:
+            st.session_state.user_dept = st.text_input("🏫 What department are you in?")
+            return
+
+        previous = self.db.conn.execute("""
+            SELECT question FROM memory 
+            WHERE user_name = ? AND user_dept = ? 
+            ORDER BY timestamp DESC LIMIT 1
+        """, (st.session_state.user_name, st.session_state.user_dept)).fetchone()
+
+        welcome_message = f"Welcome back, {st.session_state.user_name} from {st.session_state.user_dept}! 😊"
+        if previous:
+            welcome_message += f" Last time you asked: '{previous[0]}'"
+
+        with st.chat_message("assistant"):
+            st.markdown(welcome_message)
+
+        prompt = st.chat_input("Ask me anything...")
         if prompt:
             st.session_state.history.append((prompt, ""))
             self.respond(prompt)
@@ -266,23 +275,21 @@ class ChatInterface:
                     st.markdown(a)
 
     def respond(self, query):
-        full_response = ""
         response, source = self.ai.get_response(query, st.session_state.history)
-
-        full_response = response
         with st.chat_message("assistant"):
-            st.markdown(full_response)
-
-        st.session_state.history[-1] = (query, full_response)
+            st.markdown(response)
+        st.session_state.history[-1] = (query, response)
         self.db.store_conversation(
             st.session_state.session_id,
             st.session_state.user_name,
             st.session_state.user_dept,
             query,
-            full_response
+            response
         )
         self.db.log_analytics("response", {
-            "query": query, "source": source, "length": len(full_response)
+            "query": query,
+            "source": source,
+            "length": len(response)
         })
 
 # --- Main App ---
