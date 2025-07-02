@@ -227,9 +227,9 @@ class AIService:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,
                 max_tokens=600,
-                stream=True
+                stream=False
             )
-            return response, "llm_stream"
+            return response["choices"][0]["message"]["content"], "llm"
         except Exception as e:
             return f"[LLM Error: {str(e)}]", "error"
 
@@ -269,22 +269,9 @@ class ChatInterface:
         full_response = ""
         response, source = self.ai.get_response(query, st.session_state.history)
 
-        if source == "llm_stream":
-            try:
-                with st.chat_message("assistant"):
-                    message_placeholder = st.empty()
-                    for chunk in response:
-                        token = chunk.choices[0].delta.get("content", "")
-                        full_response += token
-                        message_placeholder.markdown(full_response + "|")
-                        time.sleep(0.03)
-            except Exception as e:
-                full_response = f"[Stream Error: {str(e)}]"
-                st.error(full_response)
-        else:
-            full_response = response
-            with st.chat_message("assistant"):
-                st.markdown(full_response)
+        full_response = response
+        with st.chat_message("assistant"):
+            st.markdown(full_response)
 
         st.session_state.history[-1] = (query, full_response)
         self.db.store_conversation(
