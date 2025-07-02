@@ -10,6 +10,8 @@ from sentence_transformers import SentenceTransformer, util
 from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 from llama_index.llms import OpenAI as LlamaOpenAI
 from textblob import TextBlob
+from symspellpy.symspellpy import SymSpell
+import pkg_resources
 
 # --- Page Config ---
 st.set_page_config(page_title="🎓 Crescent Uni Assistant Pro", layout="wide")
@@ -23,6 +25,7 @@ class Config:
         self.EMBEDDING_MODEL = "all-MiniLM-L12-v2"
         self.DOCS_DIR = "./university_docs/"
         self.ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
+        self.SYMSPELL_DICT_PATH = pkg_resources.resource_filename("symspellpy", "frequency_dictionary_en_82_765.txt")
 
 config = Config()
 openai.api_key = config.OPENAI_API_KEY
@@ -57,6 +60,29 @@ class DatabaseManager:
 def load_embedding_model(name):
     return SentenceTransformer(name)
 
+def detect_sentiment(text):
+    polarity = TextBlob(text).sentiment.polarity
+    if polarity < -0.4:
+        return "negative"
+    elif polarity > 0.4:
+        return "positive"
+    return "neutral"
+
+ABBREVIATIONS = {
+    "u": "you", "r": "are", "ur": "your", "cn": "can", "pls": "please", "asap": "as soon as possible"
+}
+
+SYNONYMS = {
+    "school fees": "tuition",
+    "hostel": "accommodation",
+    "it office": "ict department",
+    "lecturers": "academic staff",
+    "non-academic staff": "administrative staff",
+    "courses": "programs",
+    "bio": "biochemistry",
+    "comp sci": "computer science"
+}
+
 class AIService:
     def __init__(self):
         self.embedding_model = load_embedding_model(config.EMBEDDING_MODEL)
@@ -65,8 +91,21 @@ class AIService:
         self.answers = []
         self.qa_embeddings = None
         self.rag_index = None
+        self.symspell = self.initialize_symspell()
         self.load_qa_data()
         self.build_rag_index()
+
+    def initialize_symspell(self):
+        symspell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+        symspell.load_dictionary(config.SYMSPELL_DICT_PATH, term_index=0, count_index=1)
+        return symspell
+
+    def correct_spelling(self, text):
+        corrected = []
+        for word in text.split():
+            suggestions = self.symspell.lookup(word, verbosity=2)
+            corrected.append(suggestions[0].term if suggestions else word)
+        return " ".join(corrected)
 
     def load_qa_data(self):
         try:
@@ -85,8 +124,25 @@ class AIService:
             service_context = ServiceContext.from_defaults(llm=llm)
             self.rag_index = VectorStoreIndex.from_documents(documents, service_context=service_context)
 
+    def expand_abbreviations(self, text):
+        words = text.split()
+        expanded = [ABBREVIATIONS.get(word, word) for word in words]
+        return " ".join(expanded)
+
+    def replace_synonyms(self, text):
+        for key, val in SYNONYMS.items():
+            text = text.replace(key, val)
+        return text
+
     def preprocess_input(self, query):
-        return query.lower().strip()
+        query = query.lower().strip()
+        query = self.correct_spelling(query)
+        query = self.expand_abbreviations(query)
+        query = self.replace_synonyms(query)
+        return query
+
+    def is_followup(self, query):
+        return any(word in query.lower() for word in ["what about", "how about", "that one", "those", "and fees", "the requirement"])
 
     def get_best_match(self, query):
         if not self.qa_embeddings:
@@ -104,19 +160,28 @@ class AIService:
         return None
 
     def detect_small_talk(self, query):
-        small_talk_triggers = ["hi", "hello", "hey", "good morning", "good afternoon", "how are you"]
-        for phrase in small_talk_triggers:
-            if phrase in query.lower():
-                return "Hello there! 😊 How can I assist you today?"
+        small_talk = {
+            "hi": "Hello there! 😊",
+            "hello": "Hi! How can I assist you today?",
+            "how are you": "I’m doing great! Excited to help you.",
+            "thank you": "You're very welcome! 🙏",
+            "thanks": "Anytime 😊"
+        }
+        for trigger, reply in small_talk.items():
+            if trigger in query.lower():
+                return reply
         return None
 
     def get_response(self, query, session_history=None):
         query = self.preprocess_input(query)
 
-        # Detect small talk first
         small_talk = self.detect_small_talk(query)
         if small_talk:
             return small_talk, "small_talk"
+
+        if self.is_followup(query) and session_history:
+            last_topic = session_history[-1][0]
+            query = f"{last_topic}. Follow-up: {query}"
 
         score, answer, match = self.get_best_match(query)
         if score > config.SIMILARITY_THRESHOLD:
@@ -126,8 +191,19 @@ class AIService:
         if rag_answer and len(rag_answer) > 20:
             return rag_answer, "rag_system"
 
+        if score < config.SIMILARITY_THRESHOLD and (not rag_answer or len(rag_answer) < 20):
+            return "I'm not sure I fully understood that 🤔. Could you clarify or ask in another way?", "clarification"
+
         context = "\n".join([f"Q: {q}\nA: {a}" for q, a in (session_history[-3:] if session_history else [])])
-        prompt = f"You are a helpful, friendly, and slightly humorous assistant for Crescent University.\nAlways keep responses clear, short, and encouraging.\n\n{context}\n\nUser: {query}\nAssistant:"
+        sentiment = detect_sentiment(query)
+        if sentiment == "negative":
+            tone_prefix = "I'm really sorry you're having trouble. Let’s see how I can help 💙.\n"
+        elif sentiment == "positive":
+            tone_prefix = "Great to hear from you! 😄\n"
+        else:
+            tone_prefix = ""
+
+        prompt = f"{tone_prefix}You are a helpful, friendly, and slightly humorous assistant for Crescent University.\nAlways keep responses clear, short, and encouraging.\n\n{context}\n\nUser: {query}\nAssistant:"
 
         try:
             response = openai.ChatCompletion.create(
@@ -153,6 +229,10 @@ class ChatInterface:
             st.session_state.history = []
         if 'session_id' not in st.session_state:
             st.session_state.session_id = str(time.time())
+        if 'user_name' not in st.session_state:
+            st.session_state.user_name = st.text_input("Enter your name", "Anonymous")
+        if 'user_dept' not in st.session_state:
+            st.session_state.user_dept = st.selectbox("Your department", ["General", "Computer Science", "Mass Comm", "Biochem", "Other"])
 
     def show(self):
         st.title(":sparkles: Crescent University Assistant Pro")
@@ -192,7 +272,11 @@ class ChatInterface:
 
         st.session_state.history[-1] = (query, full_response)
         self.db.store_conversation(
-            st.session_state.session_id, "Anonymous", "General", query, full_response
+            st.session_state.session_id,
+            st.session_state.user_name,
+            st.session_state.user_dept,
+            query,
+            full_response
         )
         self.db.log_analytics("response", {
             "query": query, "source": source, "length": len(full_response)
