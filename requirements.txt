@@ -11,3 +11,4 @@ scikit-learn
 numpy
 pandas
 python-dotenv
+llama-index==0.10.12
