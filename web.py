@@ -4,7 +4,7 @@ import json
 import time
 import os
 import openai
-import psycopg2
+import sqlite3
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, util
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
@@ -30,31 +30,47 @@ class Config:
 config = Config()
 openai.api_key = config.OPENAI_API_KEY
 
-# --- Database Manager ---
+# --- Database Manager (SQLite) ---
 class DatabaseManager:
     def __init__(self):
-        self.conn = psycopg2.connect(
-            dbname=st.secrets.get("DB_NAME", "chatbot"),
-            user=st.secrets.get("DB_USER", "postgres"),
-            password=st.secrets.get("DB_PASSWORD", ""),
-            host=st.secrets.get("DB_HOST", "localhost")
-        )
+        self.conn = sqlite3.connect("chatbot.db", check_same_thread=False)
+        self.create_tables()
+
+    def create_tables(self):
+        with self.conn:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    user_name TEXT,
+                    user_dept TEXT,
+                    question TEXT,
+                    answer TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS analytics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT,
+                    event_data TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
     def store_conversation(self, session_id, user_name, user_dept, question, answer):
-        with self.conn.cursor() as cursor:
-            cursor.execute("""
+        with self.conn:
+            self.conn.execute("""
                 INSERT INTO memory (session_id, user_name, user_dept, question, answer)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?)
             """, (session_id, user_name, user_dept, question, answer))
-            self.conn.commit()
 
     def log_analytics(self, event_type, event_data):
-        with self.conn.cursor() as cursor:
-            cursor.execute("""
+        with self.conn:
+            self.conn.execute("""
                 INSERT INTO analytics (event_type, event_data)
-                VALUES (%s, %s)
+                VALUES (?, ?)
             """, (event_type, json.dumps(event_data)))
-            self.conn.commit()
 
 # --- AI Service ---
 def load_embedding_model(name):
@@ -69,37 +85,18 @@ def detect_sentiment(text):
     return "neutral"
 
 ABBREVIATIONS = {
-    "u": "you", "r": "are", "ur": "your", "cn": "can", "cud": "could",
-    "shud": "should", "wud": "would", "abt": "about", "bcz": "because",
-    "plz": "please", "pls": "please", "tmrw": "tomorrow", "wat": "what",
-    "wats": "what is", "info": "information", "yr": "year", "sem": "semester",
-    "admsn": "admission", "clg": "college", "sch": "school", "uni": "university",
-    "cresnt": "crescent", "l": "level", "d": "the", "msg": "message",
-    "idk": "i don't know", "imo": "in my opinion", "asap": "as soon as possible",
-    "dept": "department", "reg": "registration", "fee": "fees", "pg": "postgraduate",
-    "app": "application", "req": "requirement", "nd": "national diploma",
-    "a-level": "advanced level", "alevel": "advanced level", "2nd": "second",
-    "1st": "first", "nxt": "next", "prev": "previous", "exp": "experience",
-    "CSC": "department of Computer Science", "Mass comm": "department of Mass Communication",
-    "law": "department of law", "Acc": "department of Accounting"
+    "u": "you", "r": "are", "ur": "your", "cn": "can", "pls": "please", "asap": "as soon as possible"
 }
 
 SYNONYMS = {
-    "lecturers": "academic staff", "professors": "academic staff",
-    "teachers": "academic staff", "instructors": "academic staff",
-    "tutors": "academic staff", "staff members": "staff",
-    "head": "dean", "hod": "head of department", "dept": "department",
-    "school": "university", "college": "faculty", "course": "subject",
-    "class": "course", "subject": "course", "unit": "credit",
-    "credit unit": "unit", "course load": "unit", "non teaching": "non-academic",
-    "admin worker": "non-academic staff", "support staff": "non-academic staff",
-    "clerk": "non-academic staff", "receptionist": "non-academic staff",
-    "secretary": "non-academic staff", "tech staff": "technical staff",
-    "hostel": "accommodation", "lodging": "accommodation", "room": "accommodation",
-    "school fees": "tuition", "acceptance fee": "admission fee", "fees": "tuition",
-    "enrol": "apply", "join": "apply", "sign up": "apply", "admit": "apply",
-    "requirement": "criteria", "conditions": "criteria", "needed": "required",
-    "needed for": "required for", "who handles": "who manages"
+    "school fees": "tuition",
+    "hostel": "accommodation",
+    "it office": "ict department",
+    "lecturers": "academic staff",
+    "non-academic staff": "administrative staff",
+    "courses": "programs",
+    "bio": "biochemistry",
+    "comp sci": "computer science"
 }
 
 class AIService:
