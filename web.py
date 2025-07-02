@@ -6,6 +6,7 @@ import os
 import openai
 import psycopg2
 import random
+import uuid
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, util
 from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
@@ -102,13 +103,18 @@ class AIService:
         self.rag_index = None
         self.load_qa_data()
         self.build_rag_index()
+
         self.sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-        # Load dictionary file for SymSpell (make sure the path/file is correct)
+        # Load dictionary file for SymSpell
         dict_path = "frequency_dictionary_en_82_765.txt"
         if os.path.exists(dict_path):
             self.sym_spell.load_dictionary(dict_path, term_index=0, count_index=1)
         else:
-            st.warning(f"SymSpell dictionary file '{dict_path}' not found. Spell correction disabled.")
+            st.warning(
+                f"SymSpell dictionary file '{dict_path}' not found. Spell correction disabled. "
+                "You can download it from https://github.com/wolfgarbe/SymSpell/blob/master/SymSpell/frequency_dictionary_en_82_765.txt"
+            )
+            self.sym_spell = None  # Disable symspell if no dict
 
         # Abbreviations and synonyms map
         self.ABBREVIATIONS = {
@@ -146,7 +152,9 @@ class AIService:
             self.rag_index = VectorStoreIndex.from_documents(documents, service_context=service_context)
         else:
             self.rag_index = None
-            st.warning(f"RAG documents directory '{config.DOCS_DIR}' is empty or missing. Please add docs for knowledge retrieval.")
+            st.warning(
+                f"RAG documents directory '{config.DOCS_DIR}' is empty or missing. Please add docs for knowledge retrieval."
+            )
 
     def preprocess_input(self, query):
         original_query = query
@@ -154,7 +162,7 @@ class AIService:
         expanded_words = []
 
         # Spell correction via SymSpell
-        if hasattr(self, "sym_spell") and self.sym_spell:
+        if self.sym_spell:
             suggestions = self.sym_spell.lookup_compound(query, max_edit_distance=2)
             if suggestions and suggestions[0].term.lower() != query.lower():
                 corrected = suggestions[0].term
@@ -244,11 +252,15 @@ class AIService:
             context = "\n".join([f"User: {q}\nAssistant: {a}" for q, a in last_pairs if a])
 
         sentiment = TextBlob(query).sentiment.polarity
+
         tone = ""
         if sentiment < -0.3:
             tone = "I'm sorry to hear that. I'll do my best to help you."
         elif sentiment > 0.3:
             tone = "That's great! How can I assist you further?"
+
+        user_name = st.session_state.get("user_name", "User")
+        user_dept = st.session_state.get("user_dept", "General")
 
         prompt_messages = [
             {
@@ -261,7 +273,10 @@ class AIService:
             {
                 "role": "user",
                 "content": (
-                    f"{tone}\nConversation history:\n{context}\n\nUser: {query}"
+                    f"{tone}\n"
+                    f"User: {user_name}\n"
+                    f"Department: {user_dept}\n"
+                    f"Conversation history:\n{context}\n\nUser: {query}"
                 )
             }
         ]
@@ -280,8 +295,9 @@ class AIService:
             if score < config.LOW_CONFIDENCE_THRESHOLD:
                 return "I’m not quite sure I understand. Could you please clarify or rephrase your question?", "clarification"
             else:
-                # Return best QA answer anyway as last resort
-                return answer or "Sorry, I couldn't find an answer to that.", "qa_match_fallback"
+                # Return best QA answer anyway as last resort or fallback message
+                fallback_msg = answer or "Sorry, I couldn't find an answer to that."
+                return fallback_msg, "qa_match_fallback"
 
 # --- Chat Interface ---
 class ChatInterface:
@@ -294,9 +310,11 @@ class ChatInterface:
         if 'history' not in st.session_state:
             st.session_state.history = []
         if 'session_id' not in st.session_state:
-            st.session_state.session_id = str(time.time())
+            st.session_state.session_id = str(uuid.uuid4())  # Unique session ID
         if 'user_name' not in st.session_state:
             st.session_state.user_name = ""
+        if 'user_dept' not in st.session_state:
+            st.session_state.user_dept = "General"
 
     def show(self):
         st.title(":sparkles: Crescent University Assistant Pro")
@@ -308,6 +326,23 @@ class ChatInterface:
                 st.session_state.user_name = name.strip()
                 st.success(f"Nice to meet you, {st.session_state.user_name}!")
             st.stop()
+
+        # Ask for user department if not set or allow change
+        dept = st.selectbox(
+            "Select your department:",
+            options=[
+                "General",
+                "Computer Science",
+                "Chemical Science",
+                "Mechanical Engineering",
+                "Business Administration",
+                "Law",
+                # Add more departments as needed
+            ],
+            index=0,
+            key="user_dept_select"
+        )
+        st.session_state.user_dept = dept
 
         # Add Reset Chat button
         if st.button("🔄 Reset Chat"):
@@ -337,7 +372,8 @@ class ChatInterface:
                     for chunk in response:
                         token = chunk.choices[0].delta.get("content", "")
                         full_response += token
-                        message_placeholder.markdown(full_response + "|")
+                        # Removed typing cursor "|" for cleaner look
+                        message_placeholder.markdown(full_response)
                         time.sleep(0.02)
             except Exception as e:
                 full_response = f"[Stream Error: {str(e)}]"
@@ -354,14 +390,18 @@ class ChatInterface:
         self.db.store_conversation(
             st.session_state.session_id,
             st.session_state.user_name,
-            "General",
+            st.session_state.user_dept,
             query,
             full_response
         )
+        # Log sentiment for analytics too
+        sentiment_score = TextBlob(query).sentiment.polarity
         self.db.log_analytics("response", {
             "query": query,
             "source": source,
-            "length": len(full_response)
+            "length": len(full_response),
+            "sentiment": sentiment_score,
+            "user_dept": st.session_state.user_dept
         })
 
 # --- Main App ---
