@@ -182,6 +182,18 @@ class AIService:
         return None
 
     def get_response(self, query, session_history=None):
+        # Website-based shortcuts
+        site_links = {
+            "admission": "https://cuab.edu.ng/admission",
+            "school fees": "https://cuab.edu.ng/tuition-fees/",
+            "calendar": "https://cuab.edu.ng/academic-calendar",
+            "contact": "https://cuab.edu.ng/contact",
+            "programs": "https://cuab.edu.ng/undergraduate-programmes"
+        }
+
+        for keyword, link in site_links.items():
+            if keyword in query.lower():
+                return f"You can learn more about **{keyword}** [here]({link}).", "cuab_link"
         query = self.preprocess_input(query)
 
         if query.isdigit() and 'clarification_options' in st.session_state:
