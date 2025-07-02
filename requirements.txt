@@ -4,5 +4,5 @@ psycopg2-binary
 sentence-transformers
 symspellpy
 textblob
-llama-index==0.10.25  # Ensure compatibility with current API structure
-pkg_resources
+llama-index==0.10.25
+setuptools>=68.0  # (ensures pkg_resources is present)
