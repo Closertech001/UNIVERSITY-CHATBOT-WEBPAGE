@@ -184,9 +184,62 @@ class AIService:
     def get_response(self, query, session_history=None):
         query = self.preprocess_input(query)
 
+        if query.isdigit() and 'clarification_options' in st.session_state:
+            options = st.session_state.pop('clarification_options', [])
+            try:
+                selected_idx = int(query) - 1
+                if 0 <= selected_idx < len(options):
+                    query = options[selected_idx]
+            except:
+                return "Sorry, I didn't understand that selection.", "clarification_error"
+
         small_talk = self.detect_small_talk(query)
         if small_talk:
             return small_talk, "small_talk"
+
+        score, answer, match = self.get_best_match(query)
+        if match == "clarification":
+            st.session_state.clarification_options = answer.split('
+')[1:-2]
+            return answer, "clarification"
+
+        if score > config.SIMILARITY_THRESHOLD:
+            return answer, "qa_match"
+
+        rag_answer = self.query_rag(query)
+        if rag_answer and len(rag_answer) > 20:
+            return rag_answer, "rag_system"
+
+        context = "
+".join([f"Q: {q}
+A: {a}" for q, a in (session_history[-3:] if session_history else [])])
+        sentiment = detect_sentiment(query)
+        if sentiment == "negative":
+            tone_prefix = "I'm really sorry you're having trouble. Let’s see how I can help 💙.
+"
+        elif sentiment == "positive":
+            tone_prefix = "Great to hear from you! 😄
+"
+        else:
+            tone_prefix = ""
+
+        prompt = f"{tone_prefix}You're a thoughtful and smart university assistant. Think step-by-step and respond in a clear, friendly way.
+{context}
+
+User: {query}
+Assistant:"
+
+        try:
+            response = openai.ChatCompletion.create(
+                model=self.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=600,
+                stream=False
+            )
+            return response["choices"][0]["message"]["content"], "llm"
+        except Exception as e:
+            return f"[LLM Error: {str(e)}]", "error" small_talk, "small_talk"
 
         score, answer, match = self.get_best_match(query)
         if match == "clarification":
@@ -259,8 +312,23 @@ class ChatInterface:
         if previous:
             welcome_message += f" Last time you asked: '{previous[0]}'"
 
-        with st.chat_message("assistant"):
+                with st.chat_message("assistant"):
             st.markdown(welcome_message)
+
+        # --- Proactive suggestions ---
+        past_questions = self.db.conn.execute("""
+            SELECT question FROM memory
+            WHERE user_name = ? AND user_dept = ?
+            ORDER BY timestamp DESC LIMIT 5
+        """, (st.session_state.user_name, st.session_state.user_dept)).fetchall()
+
+        if past_questions:
+            related = [q[0] for q in past_questions if q[0] != previous[0]]
+            if related:
+                st.markdown("
+#### 🔍 You might also be interested in:")
+                for q in related[:2]:
+                    st.markdown(f"- {q}")
 
         prompt = st.chat_input("Ask me anything...")
         if prompt:
