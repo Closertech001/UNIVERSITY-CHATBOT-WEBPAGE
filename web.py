@@ -161,7 +161,7 @@ class AIService:
         return any(word in query.lower() for word in ["what about", "how about", "that one", "those", "and fees", "the requirement"])
 
     def get_best_match(self, query):
-        if not self.qa_embeddings:
+        if self.qa_embeddings is None:
             return 0, None, None
         query_embedding = self.embedding_model.encode(query, convert_to_tensor=True)
         scores = util.cos_sim(query_embedding, self.qa_embeddings)[0]
