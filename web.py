@@ -5,6 +5,7 @@ import time
 import os
 import openai
 import psycopg2
+import random
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, util
 from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
@@ -91,7 +92,8 @@ class DatabaseManager:
 
 # --- AI Service ---
 class AIService:
-    def __init__(self):
+    def __init__(self, db=None):
+        self.db = db
         self.embedding_model = SentenceTransformer(config.EMBEDDING_MODEL)
         self.llm_model = config.LLM_MODEL
         self.questions = []
@@ -137,25 +139,49 @@ class AIService:
             self.qa_embeddings = None
 
     def build_rag_index(self):
-        if os.path.exists(config.DOCS_DIR):
+        if os.path.exists(config.DOCS_DIR) and os.listdir(config.DOCS_DIR):
             documents = SimpleDirectoryReader(config.DOCS_DIR).load_data()
             llm = LlamaOpenAI(model=config.LLM_MODEL, temperature=0.2)
             service_context = ServiceContext.from_defaults(llm=llm)
             self.rag_index = VectorStoreIndex.from_documents(documents, service_context=service_context)
         else:
             self.rag_index = None
+            st.warning(f"RAG documents directory '{config.DOCS_DIR}' is empty or missing. Please add docs for knowledge retrieval.")
 
     def preprocess_input(self, query):
+        original_query = query
+        corrected = None
+        expanded_words = []
+
         # Spell correction via SymSpell
         if hasattr(self, "sym_spell") and self.sym_spell:
             suggestions = self.sym_spell.lookup_compound(query, max_edit_distance=2)
-            if suggestions:
-                query = suggestions[0].term
+            if suggestions and suggestions[0].term.lower() != query.lower():
+                corrected = suggestions[0].term
+                query = corrected
 
-        # Replace abbreviations
+        # Replace abbreviations and track expansions
         words = query.split()
-        words = [self.ABBREVIATIONS.get(w.lower(), w) for w in words]
-        return " ".join(words).lower().strip()
+        new_words = []
+        for w in words:
+            if w.lower() in self.ABBREVIATIONS:
+                expanded_words.append((w, self.ABBREVIATIONS[w.lower()]))
+                new_words.append(self.ABBREVIATIONS[w.lower()])
+            else:
+                new_words.append(w)
+        query = " ".join(new_words).lower().strip()
+
+        # Log typo and abbreviation events
+        if self.db and (corrected or expanded_words):
+            event_data = {
+                "original": original_query,
+                "corrected": corrected,
+                "expansions": expanded_words,
+                "final_query": query
+            }
+            self.db.log_analytics("typo_abbreviation", event_data)
+
+        return query
 
     def get_best_match(self, query):
         if not self.qa_embeddings or not self.questions:
@@ -173,11 +199,22 @@ class AIService:
         return None
 
     def detect_small_talk(self, query):
-        small_talk_triggers = ["hi", "hello", "hey", "good morning", "good afternoon", "how are you"]
-        for phrase in small_talk_triggers:
+        small_talk_map = {
+            "hi": ["Hello!", "Hi there!", "Hey!"],
+            "hello": ["Hello!", "Hi!", "Hey!"],
+            "hey": ["Hey!", "Hello!"],
+            "good morning": ["Good morning! How can I help?"],
+            "good afternoon": ["Good afternoon! What can I do for you?"],
+            "good evening": ["Good evening! How may I assist?"],
+            "how are you": ["I'm great, thanks for asking! How about you?"],
+            "bye": ["Goodbye! Have a great day!", "See you later!"],
+            "thanks": ["You're welcome!", "Glad I could help!"],
+            "thank you": ["You're welcome!", "Anytime!"]
+        }
+        for phrase, responses in small_talk_map.items():
             if phrase in query.lower():
                 user_name = st.session_state.get("user_name", "there")
-                return f"Hello {user_name}! 😊 How can I assist you today?"
+                return f"{random.choice(responses)} {user_name}"
         return None
 
     def get_response(self, query, session_history=None):
@@ -190,6 +227,7 @@ class AIService:
 
         # Get best similarity match
         score, answer, match = self.get_best_match(query)
+
         if score > config.SIMILARITY_THRESHOLD:
             return answer, "qa_match"
 
@@ -198,11 +236,13 @@ class AIService:
         if rag_answer and len(rag_answer) > 20:
             return rag_answer, "rag_system"
 
-        # Low confidence: ask for clarification
-        if score < config.LOW_CONFIDENCE_THRESHOLD:
-            return "I’m not quite sure I understand. Could you please clarify or rephrase your question?", "clarification"
+        # Fallback to GPT
+        # Prepare multi-turn context
+        context = ""
+        if session_history:
+            last_pairs = session_history[-3:]
+            context = "\n".join([f"User: {q}\nAssistant: {a}" for q, a in last_pairs if a])
 
-        # Sentiment analysis for tone
         sentiment = TextBlob(query).sentiment.polarity
         tone = ""
         if sentiment < -0.3:
@@ -210,26 +250,38 @@ class AIService:
         elif sentiment > 0.3:
             tone = "That's great! How can I assist you further?"
 
-        # Prepare multi-turn context
-        context = ""
-        if session_history:
-            last_pairs = session_history[-3:]
-            context = "\n".join([f"User: {q}\nAssistant: {a}" for q, a in last_pairs if a])
-
-        prompt = f"You are a helpful, friendly, and slightly humorous assistant for Crescent University.\n" \
-                 f"{tone}\nConversation history:\n{context}\n\nUser: {query}\nAssistant:"
+        prompt_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful, friendly, and slightly humorous assistant for Crescent University. "
+                    "Respond clearly and politely."
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{tone}\nConversation history:\n{context}\n\nUser: {query}"
+                )
+            }
+        ]
 
         try:
             response = openai.ChatCompletion.create(
                 model=self.llm_model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=prompt_messages,
                 temperature=0.4,
                 max_tokens=600,
                 stream=True
             )
             return response, "llm_stream"
         except Exception as e:
-            return f"[LLM Error: {str(e)}]", "error"
+            # If GPT fails
+            if score < config.LOW_CONFIDENCE_THRESHOLD:
+                return "I’m not quite sure I understand. Could you please clarify or rephrase your question?", "clarification"
+            else:
+                # Return best QA answer anyway as last resort
+                return answer or "Sorry, I couldn't find an answer to that.", "qa_match_fallback"
 
 # --- Chat Interface ---
 class ChatInterface:
@@ -256,6 +308,11 @@ class ChatInterface:
                 st.session_state.user_name = name.strip()
                 st.success(f"Nice to meet you, {st.session_state.user_name}!")
             st.stop()
+
+        # Add Reset Chat button
+        if st.button("🔄 Reset Chat"):
+            st.session_state.history = []
+            st.experimental_rerun()
 
         prompt = st.chat_input("Ask me anything about the university...")
         if prompt:
@@ -310,7 +367,7 @@ class ChatInterface:
 # --- Main App ---
 def main():
     db = DatabaseManager()
-    ai = AIService()
+    ai = AIService(db=db)
     chat = ChatInterface(ai, db)
     chat.show()
 
