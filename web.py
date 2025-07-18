@@ -1,32 +1,24 @@
-# web.py - Crescent University Chatbot (Streamlit + Supabase + GPT + RAG)
+# web.py - Crescent University Chatbot (Streamlit + GPT + RAG)
 import streamlit as st
 import openai
 import os
 import json
 import time
 import uuid
-import random
-import psycopg2
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, util
 from textblob import TextBlob
-from symspellpy.symspellpy import SymSpell, Verbosity
+from symspellpy.symspellpy import SymSpell
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 from llama_index.llms.openai import OpenAI as LlamaOpenAI
 from dotenv import load_dotenv
 
-# --- Load secrets and environment ---
+# --- Load environment ---
 env_path = ".env"
 if os.path.exists(env_path):
     load_dotenv(env_path)
 
-DB_NAME = st.secrets.get("DB_NAME") or os.getenv("DB_NAME")
-DB_USER = st.secrets.get("DB_USER") or os.getenv("DB_USER")
-DB_PASSWORD = st.secrets.get("DB_PASSWORD") or os.getenv("DB_PASSWORD")
-DB_HOST = st.secrets.get("DB_HOST") or os.getenv("DB_HOST")
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD") or os.getenv("ADMIN_PASSWORD", "admin123")
-
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
 # --- Config ---
@@ -39,58 +31,9 @@ class Config:
 
 config = Config()
 
-# --- DB Manager ---
-class DatabaseManager:
-    def __init__(self):
-        try:
-            self.conn = psycopg2.connect(
-                dbname=DB_NAME, user=DB_USER,
-                password=DB_PASSWORD, host=DB_HOST
-            )
-            self.create_tables()
-        except Exception as e:
-            st.warning(f"⚠️ DB connection failed: {e}")
-            self.conn = None
-
-    def create_tables(self):
-        if not self.conn: return
-        with self.conn.cursor() as c:
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS memory (
-                    id SERIAL PRIMARY KEY,
-                    session_id TEXT, user_name TEXT, user_dept TEXT,
-                    question TEXT, answer TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS analytics (
-                    id SERIAL PRIMARY KEY,
-                    event_type TEXT, event_data JSONB,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            self.conn.commit()
-
-    def store_conversation(self, session_id, user_name, user_dept, question, answer):
-        if self.conn:
-            with self.conn.cursor() as c:
-                c.execute("""INSERT INTO memory (session_id, user_name, user_dept, question, answer)
-                             VALUES (%s, %s, %s, %s, %s)""",
-                          (session_id, user_name, user_dept, question, answer))
-                self.conn.commit()
-
-    def log_analytics(self, event_type, event_data):
-        if self.conn:
-            with self.conn.cursor() as c:
-                c.execute("""INSERT INTO analytics (event_type, event_data)
-                             VALUES (%s, %s)""", (event_type, json.dumps(event_data)))
-                self.conn.commit()
-
 # --- AI Service ---
 class AIService:
-    def __init__(self, db=None):
-        self.db = db
+    def __init__(self):
         self.embedding_model = SentenceTransformer(config.EMBEDDING_MODEL)
         self.llm_model = config.LLM_MODEL
         self.questions, self.answers = [], []
@@ -138,19 +81,13 @@ class AIService:
 
     def preprocess_input(self, query):
         original = query
-        corrected = None
         if self.sym_spell:
             suggestions = self.sym_spell.lookup_compound(query, max_edit_distance=2)
             if suggestions:
-                corrected = suggestions[0].term
-                query = corrected
+                query = suggestions[0].term
 
         words = query.split()
         query = " ".join([self.ABBREVIATIONS.get(w.lower(), w) for w in words])
-        if self.db:
-            self.db.log_analytics("typo_abbreviation", {
-                "original": original, "corrected": corrected, "final": query
-            })
         return query
 
     def get_best_match(self, query):
@@ -211,9 +148,8 @@ class AIService:
 
 # --- Chat UI ---
 class ChatInterface:
-    def __init__(self, ai: AIService, db: DatabaseManager):
+    def __init__(self, ai: AIService):
         self.ai = ai
-        self.db = db
         self.init_session()
 
     def init_session(self):
@@ -272,23 +208,11 @@ class ChatInterface:
             with st.chat_message("assistant"): st.markdown(full)
 
         st.session_state.history[-1] = (query, full)
-        self.db.store_conversation(
-            st.session_state.session_id,
-            st.session_state.user_name,
-            st.session_state.user_dept,
-            query,
-            full
-        )
-        self.db.log_analytics("response", {
-            "query": query, "source": source,
-            "length": len(full), "sentiment": TextBlob(query).sentiment.polarity
-        })
 
 # --- Main ---
 def main():
-    db = DatabaseManager()
-    ai = AIService(db=db)
-    chat = ChatInterface(ai, db)
+    ai = AIService()
+    chat = ChatInterface(ai)
     chat.show()
 
 if __name__ == "__main__":
