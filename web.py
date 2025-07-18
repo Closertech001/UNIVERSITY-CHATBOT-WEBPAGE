@@ -9,7 +9,7 @@ import random
 import uuid
 from datetime import datetime
 from sentence_transformers import SentenceTransformer, util
-from llama_index import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, ServiceContext
 from llama_index.llms import OpenAI as LlamaOpenAI
 from textblob import TextBlob
 from symspellpy.symspellpy import SymSpell, Verbosity
