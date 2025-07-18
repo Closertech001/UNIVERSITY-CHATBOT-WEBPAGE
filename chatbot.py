@@ -1,197 +1,148 @@
 import streamlit as st
-from openai import OpenAI
-import json
 import os
-import tempfile
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from typing import List, Dict, Optional
+import json
+import faiss
+import numpy as np
+import openai
+from sentence_transformers import SentenceTransformer, util
+from textblob import TextBlob
+from symspellpy import SymSpell, Verbosity
+from dotenv import load_dotenv
+import time
+import re
 
-# --- Configuration ---
-SYSTEM_PROMPT = """
-You are Alex, a knowledgeable university assistant. Respond with:
-- Accurate information from provided data
-- Friendly, professional tone
-- Concise answers (1-3 paragraphs)
-- Markdown formatting when helpful
-- "I don't know" for unclear queries (never hallucinate)
-"""
+# Load env vars
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# --- Initialize OpenAI Client ---
-@st.cache_resource(show_spinner=False)
-def init_openai_client() -> tuple[OpenAI, OpenAIEmbeddings]:
-    """Initialize OpenAI client and embeddings with API key validation"""
+# --- Dictionaries for synonyms and abbreviations ---
+SYNONYMS = {
+    "program": "course",
+    "courses": "subjects",
+    "exam": "examination",
+    "lecturer": "instructor",
+    "study": "learn",
+    "major": "department",
+    "dorm": "hostel",
+}
+
+ABBREVIATIONS = {
+    "vc": "vice chancellor",
+    "hod": "head of department",
+    "cgpa": "cumulative grade point average",
+    "gp": "grade point",
+    "gpa": "grade point average",
+    "dept": "department",
+    "uni": "university",
+    "cuab": "crescent university",
+}
+
+# --- Normalize query ---
+def normalize_query(text):
+    # Lowercase and expand abbreviations
+    for abbr, full in ABBREVIATIONS.items():
+        pattern = r"\b" + re.escape(abbr) + r"\b"
+        text = re.sub(pattern, full, text, flags=re.IGNORECASE)
+
+    # Replace synonyms
+    for syn, std in SYNONYMS.items():
+        pattern = r"\b" + re.escape(syn) + r"\b"
+        text = re.sub(pattern, std, text, flags=re.IGNORECASE)
+
+    # Correct typos
+    text = correct_text(text)
+    return text
+
+# --- Correct typos ---
+def correct_text(text):
+    suggestions = symspell.lookup_compound(text, max_edit_distance=2)
+    return suggestions[0].term if suggestions else text
+
+# --- Search with FAISS ---
+def search(query, index, model, chunks, top_k=1):
+    query_emb = model.encode(query).astype("float32")
+    D, I = index.search(np.array([query_emb]), top_k)
+    match = chunks[I[0][0]]
+    score = D[0][0]
+    return match, score
+
+# --- Ask GPT-4 with fallback ---
+def ask_gpt(prompt):
     try:
-        api_key = (
-            os.getenv("OPENAI_API_KEY") or 
-            st.secrets.get("OPENAI_API_KEY") or
-            st.session_state.get("openai_api_key")
-        )
-        
-        if not api_key:
-            st.error("🔑 API key missing. Please add OPENAI_API_KEY to secrets.toml or enter below")
-            st.stop()
-            
-        return OpenAI(api_key=api_key), OpenAIEmbeddings(openai_api_key=api_key)
-    except Exception as e:
-        st.error(f"🚨 OpenAI initialization failed: {str(e)}")
-        st.stop()
-
-client, embeddings = init_openai_client()
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-
-# --- Data Loading ---
-@st.cache_data(show_spinner="Loading university knowledge...")
-def load_university_data() -> Dict:
-    """Load structured Q&A data with validation"""
-    try:
-        with open("qa_data.json") as f:
-            data = json.load(f)
-            
-            # Validate structure
-            if not isinstance(data, dict) or "faqs" not in data:
-                st.error("❌ Invalid qa_data.json format. Needs 'faqs' array")
-                st.stop()
-                
-            return data
-    except FileNotFoundError:
-        st.warning("ℹ️ No qa_data.json found - using empty knowledge base")
-        return {"faqs": []}
-    except Exception as e:
-        st.error(f"📂 Error loading qa_data.json: {str(e)}")
-        st.stop()
-
-university_data = load_university_data()
-
-# --- Session Initialization ---
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! I'm Alex, your university assistant. Ask me about:\n\n"
-         "- Admissions\n- Courses\n- Campus life\n- And more!"}
-    ]
-
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = None
-
-# --- Document Processing ---
-def process_documents(files: List[st.runtime.uploaded_file_manager.UploadedFile]) -> Optional[FAISS]:
-    """Process uploaded documents into searchable vector store"""
-    docs = []
-    
-    for file in files:
-        try:
-            # Save temp file with proper extension
-            ext = os.path.splitext(file.name)[1].lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(file.getbuffer())
-                tmp_path = tmp.name
-            
-            # Select appropriate loader
-            loader_class = {
-                ".pdf": PyPDFLoader,
-                ".docx": Docx2txtLoader,
-                ".txt": TextLoader
-            }.get(ext, TextLoader)
-            
-            docs.extend(loader_class(tmp_path).load())
-            os.unlink(tmp_path)
-        except Exception as e:
-            st.toast(f"⚠️ Skipped {file.name}: {str(e)}", icon="⚠️")
-    
-    if docs:
-        split_docs = text_splitter.split_documents(docs)
-        return FAISS.from_documents(split_docs, embeddings)
-    return None
-
-# --- Response Generation ---
-def generate_response(prompt: str) -> str:
-    """Generate context-aware response using multiple knowledge sources"""
-    try:
-        # 1. Check exact FAQ matches first
-        lower_prompt = prompt.lower()
-        for faq in university_data.get("faqs", []):
-            if (lower_prompt in faq["question"].lower() or 
-                faq["question"].lower() in lower_prompt):
-                return f"{faq['answer']}\n\n*(Source: University FAQs)*"
-        
-        # 2. Build context from multiple sources
-        context_parts = [
-            f"# University Knowledge Base\n{json.dumps(university_data, indent=2)}"
-        ]
-        
-        # Add document context if available
-        if st.session_state.vector_store:
-            docs = st.session_state.vector_store.similarity_search(prompt, k=3)
-            context_parts.append("# Supplemental Documents\n" + 
-                               "\n---\n".join(d.page_content for d in docs))
-        
-        full_context = "\n\n".join(context_parts)
-        
-        # 3. Generate LLM response
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-1106",  # Updated model
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Context:\n{full_context}\n\nQuestion: {prompt}"}
+                {"role": "system", "content": "You are a helpful Crescent University assistant."},
+                {"role": "user", "content": prompt}
             ],
-            temperature=0.5,  # More deterministic
+            temperature=0.3,
             max_tokens=500
         )
-        
-        return response.choices[0].message.content
-        
+        return response["choices"][0]["message"]["content"], "gpt-4"
     except Exception as e:
-        st.toast(f"⚠️ Generation error: {str(e)}", icon="⚠️")
-        return "Sorry, I encountered an error. Please try again."
+        return "Sorry, I'm having trouble reaching GPT-4 right now. Please try again shortly.", "fallback"
 
-# --- UI Components ---
-st.set_page_config(page_title="University Assistant", page_icon="🎓")
-st.title("🎓 University Assistant")
-st.caption("Ask me about admissions, courses, campus services, and more!")
+# --- Streamlit UI Setup ---
+st.set_page_config(page_title="🎓 Crescent Uni Assistant", layout="wide")
+st.title("🎓 Crescent University Chatbot")
+st.caption("Ask me anything about Crescent University!")
 
-with st.sidebar:
-    st.header("Configuration")
-    
-    # API key input (only if not in secrets)
-    if not os.getenv("OPENAI_API_KEY"):
-        st.session_state.openai_api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            help="Get yours from platform.openai.com"
-        )
-    
-    # Document upload section
-    st.header("Knowledge Expansion")
-    uploaded_files = st.file_uploader(
-        "Upload university documents",
-        type=["pdf", "docx", "txt"],
-        accept_multiple_files=True,
-        help="Add handbooks, policies, or course catalogs"
-    )
-    
-    if uploaded_files and st.button("Process Documents", type="primary"):
-        with st.spinner("Analyzing documents..."):
-            st.session_state.vector_store = process_documents(uploaded_files)
-            if st.session_state.vector_store:
-                st.toast(f"Processed {len(uploaded_files)} documents!", icon="✅")
-            else:
-                st.toast("No valid documents processed", icon="⚠️")
+@st.cache_resource
+def load_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
-# --- Chat Interface ---
-for msg in st.session_state.messages:
-    avatar = "🎓" if msg["role"] == "assistant" else None
-    with st.chat_message(msg["role"], avatar=avatar):
-        st.markdown(msg["content"])
+@st.cache_resource
+def load_symspell():
+    sym_spell = SymSpell(max_dictionary_edit_distance=2)
+    dict_path = "frequency_dictionary_en_82_765.txt"
+    sym_spell.load_dictionary(dict_path, term_index=0, count_index=1)
+    return sym_spell
 
-if prompt := st.chat_input("Ask about the university..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+@st.cache_resource
+def load_chunks_and_index():
+    with open("data/qa_chunks.json", "r", encoding="utf-8") as f:
+        chunks = json.load(f)
     
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    
-    with st.chat_message("assistant", avatar="🎓"):
-        response = generate_response(prompt)
-        st.markdown(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+    dim = 384
+    index = faiss.IndexFlatL2(dim)
+    embeddings = [model.encode(chunk["question"] + " " + chunk["answer"]) for chunk in chunks]
+    index.add(np.array(embeddings).astype("float32"))
+
+    return chunks, index, embeddings
+
+# Load all resources
+model = load_model()
+symspell = load_symspell()
+chunks, index, embeddings = load_chunks_and_index()
+
+# Session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# Input box
+user_input = st.text_input("You:", key="input")
+
+if user_input:
+    norm_query = normalize_query(user_input)
+    match, score = search(norm_query, index, model, chunks)
+
+    threshold = 0.4
+    if score < threshold:
+        response, source = ask_gpt(user_input)
+    else:
+        response = match["answer"]
+        source = "dataset"
+
+    st.session_state.chat_history.append(("user", user_input))
+    st.session_state.chat_history.append((source, response))
+
+# Display chat
+for sender, msg in st.session_state.chat_history:
+    if sender == "user":
+        st.markdown(f"**You:** {msg}")
+    elif sender == "gpt-4":
+        st.markdown(f"**CrescentBot (GPT-4):** {msg}")
+    elif sender == "fallback":
+        st.markdown(f"**CrescentBot:** {msg}")
+    else:
+        st.markdown(f"**CrescentBot (Local Data):** {msg}")
