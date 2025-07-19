@@ -97,7 +97,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": "Health Sciences"
+    "faculty": "COHES"
   },
   {
     "question": "What other departments are in the College of Health Sciences?",
@@ -106,8 +106,8 @@
     "credit_unit": "",
     "level": "",
     "semester": "",
-    "department": "Nursing",
-    "faculty": "Health Sciences"
+    "department": "",
+    "faculty": "COHES"
   },
   {
     "question": "What are the objectives of the Anatomy program?",
@@ -116,8 +116,8 @@
     "credit_unit": "",
     "level": "",
     "semester": "",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "List the academic staff in the Department of Anatomy.",
@@ -127,7 +127,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "Who are the technical and non-academic staff in the Department of Anatomy?",
@@ -137,7 +137,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "What are the UTME admission requirements for Department of Anatomy?",
@@ -147,7 +147,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "What are the Direct Entry requirements in Department of Anatomy?",
@@ -157,7 +157,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "Are transfer students accepted in Department of Anatomy?",
@@ -167,7 +167,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "What are the graduation requirements for B.Sc. Anatomy?",
@@ -176,8 +176,8 @@
     "credit_unit": "150",
     "level": "",
     "semester": "",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 100 level first semester Anatomy",
@@ -186,8 +186,8 @@
     "credit_unit": "",
     "level": "100",
     "semester": "First",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 100 level second semester Anatomy?",
@@ -196,8 +196,8 @@
     "credit_unit": "",
     "level": "100",
     "semester": "Second",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 200 level first semester Anatomy?",
@@ -206,8 +206,8 @@
     "credit_unit": "",
     "level": "200",
     "semester": "First",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 200 level second semester Anatomy?",
@@ -216,8 +216,8 @@
     "credit_unit": "",
     "level": "200",
     "semester": "Second",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What are the Elective courses introduced in 200 level Anatomy?",
@@ -226,8 +226,8 @@
     "credit_unit": "1",
     "level": "200",
     "semester": "",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "When are student suppose to go for their Industrial Work Experience I in Department of Anatomy?",
@@ -237,7 +237,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 300 level first semester Anatomy?",
@@ -246,8 +246,8 @@
     "credit_unit": "",
     "level": "300",
     "semester": "First",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 300 level second semester Anatomy?",
@@ -256,8 +256,8 @@
     "credit_unit": "",
     "level": "300",
     "semester": "Second",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "When are student suppose to go for their Industrial Work Experience II in Department of Anatomy?",
@@ -267,7 +267,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 400 level first semester Anatomy?",
@@ -276,8 +276,8 @@
     "credit_unit": "",
     "level": "400",
     "semester": "First",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What are the courses introduced in 400 level second semester Anatomy?",
@@ -286,8 +286,8 @@
     "credit_unit": "",
     "level": "400",
     "semester": "Second",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "What is the complete breakdown of fees for returning Anatomy students?",
@@ -296,8 +296,8 @@
     "credit_unit": "",
     "level": "",
     "semester": "",
-    "department": "",
-    "faculty": ""
+    "department": "Anatomy",
+    "faculty": "COHES"
   },
   {
     "question": "Under which college is the Department Of Anatomy?",
@@ -307,7 +307,7 @@
     "level": "",
     "semester": "",
     "department": "Anatomy",
-    "faculty": "Health Sciences"
+    "faculty": "COHES"
   },
   {
     "question": "Is SIWES included in the program of Department of Anatomy?",
@@ -317,7 +317,7 @@
     "level": "200",
     "semester": "",
     "department": "Anatomy",
-    "faculty": ""
+    "faculty": "COHES"
   },
   {
     "question": "What is the focus of the Department of Accounting?",
@@ -327,7 +327,7 @@
     "level": "",
     "semester": "",
     "department": "Accounting",
-    "faculty": ""
+    "faculty": "CASMAS"
   },
   {
     "question": "What are the UTME admission requirements for the Accounting program?",
@@ -336,8 +336,8 @@
     "credit_unit": "",
     "level": "",
     "semester": "",
-    "department": "",
-    "faculty": ""
+    "department": "Accounting",
+    "faculty": "CASMAS"
   },
   {
     "question": "What are the graduation requirements for Accounting students?",
