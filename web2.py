@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import os
 import json
@@ -114,7 +115,7 @@ def detect_greeting(user_input):
 
 # Query GPT with fallback
 def ask_gpt(query, chat_history, max_retries=2):
-    context = "\n".join([f"User: {q}\nBot: {a}" for q, a, _ in chat_history[-5:]])
+    context = "\n".join([f"User: {q}\nBot: {a}" for q, a, _ in chat_history[-5:] if isinstance((q, a, _), tuple) and len((q, a, _)) == 3])
     prompt = f"Context:\n{context}\n\nQuery: {query}\n\nAnswer as a knowledgeable assistant for Crescent University."
     
     for attempt, model in enumerate(["gpt-4", "gpt-3.5-turbo"]):
@@ -141,8 +142,20 @@ st.title("Crescent University Chatbot")
 st.write("Ask about courses, departments, or anything related to Crescent University!")
 
 # Initialize chat history
-if "chat_history" not in st.session_state:
+if "chat_history" not in st.session_state or not isinstance(st.session_state.chat_history, list):
     st.session_state.chat_history = []
+
+# Reset chat history if corrupted
+def validate_chat_history(history):
+    valid_history = []
+    for entry in history:
+        if isinstance(entry, tuple) and len(entry) == 3:
+            valid_history.append(entry)
+        else:
+            logging.error(f"Invalid chat history entry: {entry}")
+    return valid_history
+
+st.session_state.chat_history = validate_chat_history(st.session_state.chat_history)
 
 # Input field
 user_input = st.text_input("Your Question:", placeholder="e.g. What courses are offered in 200 level Law?")
@@ -171,9 +184,15 @@ if user_input:
     if len(st.session_state.chat_history) > 20:
         st.session_state.chat_history = st.session_state.chat_history[-20:]
 
-# Display chat history
-for question, answer, source in st.session_state.chat_history:
-    with st.chat_message("user"):
-        st.write(question)
-    with st.chat_message("assistant"):
-        st.write(f"CrescentBot ({source.capitalize()}): {answer}")
+# Display chat history with error handling
+try:
+    for question, answer, source in st.session_state.chat_history:
+        with st.chat_message("user"):
+            st.write(question)
+        with st.chat_message("assistant"):
+            st.write(f"CrescentBot ({source.capitalize()}): {answer}")
+except ValueError as e:
+    logging.error(f"Error displaying chat history: {str(e)}")
+    st.error("An error occurred while displaying the chat history. Resetting history to continue.")
+    st.session_state.chat_history = []
+    st.rerun()
