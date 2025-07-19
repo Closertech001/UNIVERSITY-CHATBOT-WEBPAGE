@@ -32,17 +32,17 @@ ABBREVIATIONS = {
 # --- Normalize and Correct Input ---
 def normalize_query(text):
     for abbr, full in ABBREVIATIONS.items():
-        text = re.sub(r"\\b" + re.escape(abbr) + r"\\b", full, text, flags=re.IGNORECASE)
+        text = re.sub(r"\b" + re.escape(abbr) + r"\b", full, text, flags=re.IGNORECASE)
     for syn, std in SYNONYMS.items():
-        text = re.sub(r"\\b" + re.escape(syn) + r"\\b", std, text, flags=re.IGNORECASE)
+        text = re.sub(r"\b" + re.escape(syn) + r"\b", std, text, flags=re.IGNORECASE)
     suggestions = symspell.lookup_compound(text, max_edit_distance=2)
     return suggestions[0].term if suggestions else text
 
 # --- FAISS Semantic Search ---
-def search(query, index, model, chunks, top_k=1):
+def search(query, index, model, questions, top_k=1):
     query_emb = model.encode(query).astype("float32")
     D, I = index.search(np.array([query_emb]), top_k)
-    return chunks[I[0][0]], D[0][0]
+    return I[0][0], D[0][0]
 
 # --- GPT-4 Fallback ---
 def ask_gpt(prompt):
@@ -50,7 +50,11 @@ def ask_gpt(prompt):
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a helpful Crescent University assistant."},
+                {"role": "system", "content": (
+                    "You are a knowledgeable assistant for Crescent University. "
+                    "Only provide factual answers based on Crescent University's structure, departments, and courses. "
+                    "If unsure, respond with 'I don't know.'"
+                )},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.4, max_tokens=600
@@ -78,16 +82,16 @@ def load_symspell():
 def load_chunks_index():
     with open("data/qa_data_cleaned.json", "r", encoding="utf-8") as f:
         chunks = json.load(f)
-    texts = [q["question"] + " " + q["answer"] for q in chunks]
-    embeddings = model.encode(texts, convert_to_numpy=True).astype("float32")
+    questions = [q["question"] for q in chunks]
+    embeddings = model.encode(questions, convert_to_numpy=True).astype("float32")
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
-    return chunks, index
+    return chunks, index, questions
 
 # --- Load Resources ---
 model = load_model()
 symspell = load_symspell()
-chunks, index = load_chunks_index()
+chunks, index, questions = load_chunks_index()
 
 # --- Session State ---
 if "chat_history" not in st.session_state:
@@ -97,13 +101,13 @@ if "chat_history" not in st.session_state:
 user_input = st.text_input("You:", key="input")
 if user_input:
     norm_query = normalize_query(user_input)
-    match, score = search(norm_query, index, model, chunks)
-    threshold = 0.45
+    idx, score = search(norm_query, index, model, questions)
+    threshold = 0.65
 
     if score < threshold:
         response, source = ask_gpt(user_input)
     else:
-        response, source = match["answer"], "dataset"
+        response, source = chunks[idx]["answer"], "dataset"
 
     st.session_state.chat_history.append(("user", user_input))
     st.session_state.chat_history.append((source, response))
