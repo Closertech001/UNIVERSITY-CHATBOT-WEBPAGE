@@ -1,161 +1,179 @@
-# web.py - Crescent University Chatbot (Enhanced with Fallbacks)
-
 import streamlit as st
 import os
 import json
-import faiss
-import numpy as np
-import openai
-from sentence_transformers import SentenceTransformer
-from textblob import TextBlob
-from symspellpy import SymSpell
-from dotenv import load_dotenv
 import re
-import time
-from datetime import datetime
+import faiss
+import openai
+import logging
+from sentence_transformers import SentenceTransformer
+from symspellpy import SymSpell, Verbosity
+from dotenv import load_dotenv
 
-# --- Load Environment Variables ---
+# Configure logging
+logging.basicConfig(filename='gpt_fallback_logs.txt', level=logging.ERROR, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Load environment variables
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
+SEMANTIC_THRESHOLD = float(os.getenv("SEMANTIC_THRESHOLD", "0.65"))
 
-# --- Synonyms & Abbreviations ---
-SYNONYMS = {
-    "program": "course", "courses": "subjects", "exam": "examination",
-    "lecturer": "instructor", "study": "learn", "major": "department",
-    "dorm": "hostel"
-}
-ABBREVIATIONS = {
-    "vc": "vice chancellor", "hod": "head of department",
-    "cgpa": "cumulative grade point average", "gp": "grade point",
-    "gpa": "grade point average", "dept": "department",
-    "uni": "university", "cuab": "crescent university"
-}
+# Validate OpenAI API key
+if not openai.api_key:
+    st.error("OpenAI API key not found. Please set it in the .env file.")
+    st.stop()
 
-# --- Normalize and Correct Input ---
-def normalize_query(text):
-    for abbr, full in ABBREVIATIONS.items():
-        text = re.sub(r"\b" + re.escape(abbr) + r"\b", full, text, flags=re.IGNORECASE)
-    for syn, std in SYNONYMS.items():
-        text = re.sub(r"\b" + re.escape(syn) + r"\b", std, text, flags=re.IGNORECASE)
-    suggestions = symspell.lookup_compound(text, max_edit_distance=2)
-    return suggestions[0].term if suggestions else text
-
-# --- FAISS Semantic Search ---
-def search(query, index, model, top_k=1):
-    query_emb = model.encode(query).astype("float32")
-    D, I = index.search(np.array([query_emb]), top_k)
-    return I[0][0], D[0][0]
-
-# --- GPT-4 with GPT-3.5 Fallback ---
-def ask_gpt(prompt, history=None):
-    chat_log = "\n".join([f"User: {q}\nAssistant: {a}" for q, a in (history or [])[-3:]])
-    full_prompt = (
-        "You are a knowledgeable and friendly assistant for Crescent University. "
-        "Answer only based on information relevant to the university. If you are unsure, say 'I don't know.'\n\n"
-        f"Chat History:\n{chat_log}\n\nUser: {prompt}"
-    )
-
-    def call_gpt(model_name):
-        return openai.ChatCompletion.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "You are a helpful Crescent University chatbot."},
-                {"role": "user", "content": full_prompt}
-            ],
-            temperature=0.4,
-            max_tokens=600,
-            timeout=10
-        )["choices"][0]["message"]["content"]
-
-    try:
-        response = call_gpt("gpt-4")
-        return response, "gpt-4"
-
-    except Exception as e1:
-        print(f"[GPT-4 Error] {e1}")
-        try:
-            response = call_gpt("gpt-3.5-turbo")
-            return response, "gpt-3.5"
-        except Exception as e2:
-            print(f"[GPT-3.5 Error] {e2}")
-            with open("gpt_fallback_logs.txt", "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now()}] GPT-4 failed: {e1}\nGPT-3.5 failed: {e2}\nPrompt: {prompt}\n\n")
-            fallback_reply = (
-                "I'm currently unable to fetch a detailed answer. "
-                "Please try again later, or rephrase your question for better results."
-            )
-            return fallback_reply, "fallback"
-
-# --- Greeting Detection ---
-def detect_greeting(user_input):
-    greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
-    return any(g in user_input.lower() for g in greetings)
-
-# --- Streamlit UI Setup ---
-st.set_page_config(page_title="🎓 Crescent Uni Assistant", layout="wide")
-st.title("🎓 Crescent University Chatbot")
-st.caption("Ask me anything about courses, departments, staff, or university life!")
-
+# Initialize SentenceTransformer model
 @st.cache_resource
 def load_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
+    try:
+        return SentenceTransformer('all-MiniLM-L6-v2')
+    except Exception as e:
+        st.error(f"Failed to load SentenceTransformer model: {e}")
+        st.stop()
 
+model = load_model()
+
+# Load SymSpell for spell correction
 @st.cache_resource
 def load_symspell():
-    sym = SymSpell(max_dictionary_edit_distance=2)
-    sym.load_dictionary("data/frequency_dictionary_en_82_765.txt", term_index=0, count_index=1)
-    return sym
+    try:
+        sym = SymSpell(max_dictionary_edit_distance=2)
+        dict_path = "data/frequency_dictionary_en_82_765.txt"
+        if not os.path.exists(dict_path):
+            st.warning("Dictionary file not found. Spell correction disabled.")
+            return None
+        sym.load_dictionary(dict_path, term_index=0, count_index=1)
+        return sym
+    except Exception as e:
+        st.error(f"Failed to load SymSpell dictionary: {e}")
+        st.stop()
 
+symspell = load_symspell()
+
+# Load dataset and FAISS index
 @st.cache_resource
 def load_chunks_index():
-    with open("data/qa_data_cleaned.json", "r", encoding="utf-8") as f:
-        chunks = json.load(f)
-    questions = [q["question"] for q in chunks]
-    embeddings = model.encode(questions, convert_to_numpy=True).astype("float32")
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings)
-    return chunks, index, questions
+    try:
+        if not os.path.exists("data/qa_data_cleaned.json"):
+            st.error("Dataset file not found. Please ensure 'qa_data_cleaned.json' exists.")
+            st.stop()
+        with open("data/qa_data_cleaned.json", "r", encoding="utf-8") as f:
+            chunks = json.load(f)
+        # Validate dataset structure
+        for q in chunks:
+            if "question" not in q or "answer" not in q:
+                st.error("Invalid dataset format. Each entry must have 'question' and 'answer' fields.")
+                st.stop()
+        questions = [q["question"] for q in chunks]
+        embeddings = model.encode(questions, convert_to_numpy=True).astype("float32")
+        index = faiss.IndexFlatL2(embeddings.shape[1])
+        index.add(embeddings)
+        return chunks, index, questions
+    except Exception as e:
+        st.error(f"Failed to load dataset or index: {e}")
+        st.stop()
 
-# --- Load Resources ---
-model = load_model()
-symspell = load_symspell()
 chunks, index, questions = load_chunks_index()
 
-# --- Session State ---
+# Input normalization
+def normalize_input(user_input):
+    if not user_input:
+        return ""
+    # Dictionary for synonyms and abbreviations
+    replacements = {
+        "uni": "university",
+        "courses": "subjects",
+        "cgpa": "cumulative grade point average",
+        "dept": "department",
+        "sem": "semester"
+    }
+    
+    user_input = sanitize_input(user_input.lower())
+    
+    # Replace synonyms and abbreviations
+    for key, value in replacements.items():
+        user_input = user_input.replace(key, value)
+    
+    # Spell correction
+    if symspell:
+        suggestions = symspell.lookup_compound(user_input, max_edit_distance=2)
+        if suggestions:
+            user_input = suggestions[0].term
+    
+    return user_input
+
+# Input sanitization
+def sanitize_input(text):
+    return re.sub(r'[<>]', '', text.strip())
+
+# Detect greetings
+def detect_greeting(user_input):
+    greetings = r"\b(hi|hello|hey|good\s+(morning|afternoon|evening))\b"
+    return re.search(greetings, user_input.lower()) is not None
+
+# Query GPT with fallback
+def ask_gpt(query, chat_history, max_retries=2):
+    context = "\n".join([f"User: {q}\nBot: {a}" for q, a, _ in chat_history[-5:]])
+    prompt = f"Context:\n{context}\n\nQuery: {query}\n\nAnswer as a knowledgeable assistant for Crescent University."
+    
+    for attempt, model in enumerate(["gpt-4", "gpt-3.5-turbo"]):
+        try:
+            response = openai.ChatCompletion.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are CrescentBot, a helpful assistant for Crescent University."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300
+            )
+            return response.choices[0].message.content.strip(), model
+        except Exception as e:
+            logging.error(f"Error with {model}: {str(e)}")
+            if attempt == max_retries - 1:
+                st.warning("Both GPT-4 and GPT-3.5 are unavailable. Check your connection or try again later.")
+                return "I'm currently unable to fetch a detailed answer. Please try again later, or rephrase your question for better results.", "fallback"
+    
+    return "I'm currently unable to fetch a detailed answer. Please try again later, or rephrase your question for better results.", "fallback"
+
+# Streamlit UI
+st.title("Crescent University Chatbot")
+st.write("Ask about courses, departments, or anything related to Crescent University!")
+
+# Initialize chat history
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# --- Chat UI ---
-user_input = st.text_input("Ask CrescentBot:", key="input", placeholder="e.g. What courses are offered in 200 level Law?")
+# Input field
+user_input = st.text_input("Your Question:", placeholder="e.g. What courses are offered in 200 level Law?")
 if user_input:
-    if user_input.strip() == "":
-        st.warning("Please enter a valid question.")
-        st.stop()
-
+    # Sanitize and normalize input
+    norm_query = normalize_input(user_input)
+    
+    # Handle greetings
     if detect_greeting(user_input):
-        response = "Hi there! How can I assist you today at Crescent University?"
+        response = "Hello! How can I assist you with Crescent University today?"
         source = "greeting"
     else:
-        norm_query = normalize_query(user_input)
-        idx, score = search(norm_query, index, model)
-        threshold = 0.65
-
-        if score < threshold:
-            response, source = ask_gpt(norm_query, st.session_state.chat_history)
+        # Semantic search
+        query_embedding = model.encode([norm_query], convert_to_numpy=True).astype("float32")
+        distances, indices = index.search(query_embedding, 1)
+        score = 1 - distances[0][0] / 2  # Convert L2 distance to similarity
+        
+        if score >= SEMANTIC_THRESHOLD:
+            response = chunks[indices[0][0]]["answer"]
+            source = "local"
         else:
-            response, source = chunks[idx]["answer"], "dataset"
+            response, source = ask_gpt(norm_query, st.session_state.chat_history)
+    
+    # Append to chat history (limit to 20 messages)
+    st.session_state.chat_history.append((user_input, response, source))
+    if len(st.session_state.chat_history) > 20:
+        st.session_state.chat_history = st.session_state.chat_history[-20:]
 
-    st.session_state.chat_history.append(("user", user_input))
-    st.session_state.chat_history.append((source, response))
-
-# --- Display History ---
-for sender, msg in st.session_state.chat_history:
-    label = {
-        "user": "**You:**",
-        "dataset": "**CrescentBot (Local):**",
-        "gpt-4": "**CrescentBot (GPT-4):**",
-        "gpt-3.5": "**CrescentBot (GPT-3.5):**",
-        "fallback": "**CrescentBot:**",
-        "greeting": "**CrescentBot:**"
-    }.get(sender, "**CrescentBot:**")
-    st.markdown(f"{label} {msg}")
+# Display chat history
+for question, answer, source in st.session_state.chat_history:
+    with st.chat_message("user"):
+        st.write(question)
+    with st.chat_message("assistant"):
+        st.write(f"CrescentBot ({source.capitalize()}): {answer}")
