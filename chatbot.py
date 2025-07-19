@@ -100,7 +100,7 @@ def load_symspell():
 
 @st.cache_resource
 def load_chunks_and_index():
-    with open("data/qa_chunks.json", "r", encoding="utf-8") as f:
+    with open("data/qa_data.json", "r", encoding="utf-8") as f:
         chunks = json.load(f)
     
     dim = 384
