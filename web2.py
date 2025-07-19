@@ -76,7 +76,7 @@ def load_symspell():
 
 @st.cache_resource
 def load_chunks_index():
-    with open("qa_data_cleaned.json", "r", encoding="utf-8") as f:
+    with open("data/qa_data_cleaned.json", "r", encoding="utf-8") as f:
         chunks = json.load(f)
     texts = [q["question"] + " " + q["answer"] for q in chunks]
     embeddings = model.encode(texts, convert_to_numpy=True).astype("float32")
