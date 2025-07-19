@@ -1,4 +1,4 @@
-# web.py - Crescent University Chatbot (Cleaned Q&A + FAISS + GPT-4 Fallback)
+# web.py - Crescent University Chatbot (Enhanced)
 
 import streamlit as st
 import os
@@ -11,6 +11,7 @@ from textblob import TextBlob
 from symspellpy import SymSpell
 from dotenv import load_dotenv
 import re
+import time
 
 # --- Load Environment Variables ---
 load_dotenv()
@@ -32,9 +33,9 @@ ABBREVIATIONS = {
 # --- Normalize and Correct Input ---
 def normalize_query(text):
     for abbr, full in ABBREVIATIONS.items():
-        text = re.sub(r"\b" + re.escape(abbr) + r"\b", full, text, flags=re.IGNORECASE)
+        text = re.sub(r"\\b" + re.escape(abbr) + r"\\b", full, text, flags=re.IGNORECASE)
     for syn, std in SYNONYMS.items():
-        text = re.sub(r"\b" + re.escape(syn) + r"\b", std, text, flags=re.IGNORECASE)
+        text = re.sub(r"\\b" + re.escape(syn) + r"\\b", std, text, flags=re.IGNORECASE)
     suggestions = symspell.lookup_compound(text, max_edit_distance=2)
     return suggestions[0].term if suggestions else text
 
@@ -45,23 +46,30 @@ def search(query, index, model, questions, top_k=1):
     return I[0][0], D[0][0]
 
 # --- GPT-4 Fallback ---
-def ask_gpt(prompt):
+def ask_gpt(prompt, history=None):
     try:
+        chat_log = "\n".join([f"User: {q}\nAssistant: {a}" for q, a in (history or [])[-3:]])
+        full_prompt = (
+            "You are a knowledgeable and friendly assistant for Crescent University. "
+            "Answer only based on information relevant to the university. If you are unsure, say 'I don't know.'\n\n"
+            f"Chat History:\n{chat_log}\n\nUser: {prompt}"
+        )
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": (
-                    "You are a knowledgeable assistant for Crescent University. "
-                    "Only provide factual answers based on Crescent University's structure, departments, and courses. "
-                    "If unsure, respond with 'I don't know.'"
-                )},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "You are a helpful Crescent University chatbot."},
+                {"role": "user", "content": full_prompt}
             ],
             temperature=0.4, max_tokens=600
         )
         return response["choices"][0]["message"]["content"], "gpt-4"
     except Exception:
         return "Sorry, I'm currently unable to fetch a response from GPT-4.", "fallback"
+
+# --- Greeting Detection ---
+def detect_greeting(user_input):
+    greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
+    return any(g in user_input.lower() for g in greetings)
 
 # --- Streamlit UI Setup ---
 st.set_page_config(page_title="🎓 Crescent Uni Assistant", layout="wide")
@@ -100,14 +108,18 @@ if "chat_history" not in st.session_state:
 # --- Chat UI ---
 user_input = st.text_input("You:", key="input")
 if user_input:
-    norm_query = normalize_query(user_input)
-    idx, score = search(norm_query, index, model, questions)
-    threshold = 0.65
-
-    if score < threshold:
-        response, source = ask_gpt(user_input)
+    if detect_greeting(user_input):
+        response = "Hi there! How can I assist you today at Crescent University?"
+        source = "greeting"
     else:
-        response, source = chunks[idx]["answer"], "dataset"
+        norm_query = normalize_query(user_input)
+        idx, score = search(norm_query, index, model, questions)
+        threshold = 0.65
+
+        if score < threshold:
+            response, source = ask_gpt(user_input, st.session_state.chat_history)
+        else:
+            response, source = chunks[idx]["answer"], "dataset"
 
     st.session_state.chat_history.append(("user", user_input))
     st.session_state.chat_history.append((source, response))
@@ -116,8 +128,9 @@ if user_input:
 for sender, msg in st.session_state.chat_history:
     label = {
         "user": "**You:**",
-        "dataset": "**CrescentBot:**",
-        "gpt-4": "**CrescentBot:**",
-        "fallback": "**CrescentBot:**"
+        "dataset": "**CrescentBot (Local):**",
+        "gpt-4": "**CrescentBot (GPT-4):**",
+        "fallback": "**CrescentBot:**",
+        "greeting": "**CrescentBot:**"
     }.get(sender, "**CrescentBot:**")
     st.markdown(f"{label} {msg}")
